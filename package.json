@@ -10,6 +10,12 @@
     "pnpm": "11.29.0"
   },
   "scripts": {
+    "dev:web": "pnpm --filter @paperforge/web dev",
+    "typecheck:web": "pnpm --filter @paperforge/web typecheck",
+    "build:web": "pnpm --filter @paperforge/web build",
+    "preview:web": "pnpm --filter @paperforge/web preview",
+    "test:web": "pnpm --filter @paperforge/web test",
+    "test:web:watch": "pnpm --filter @paperforge/web test:watch",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },

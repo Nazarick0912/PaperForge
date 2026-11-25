@@ -21,23 +21,41 @@ PaperForge is an AI-assisted educational authoring platform structured as a Type
 - **Node.js**: `>=24.22.3 <25` (reference version `24.22.3`, see `.node-version`)
 - **pnpm**: `11.29.0`
 
-## Getting Started (Current Stage: PF-01.2)
+## Getting Started (Current Stage: PF-01.3)
 
-This repository currently contains root engineering configuration and workspace package manifests only. Application source code, environment loading, linting, unit tests, and build pipelines will be added in subsequent Phase 01 tasks.
+The shared React + Vite frontend skeleton (`@paperforge/web`) is implemented with the shared application shell, Declarative Mode routing, dashboard, four independent module placeholder pages, reusable UI and feedback primitives, and Vitest component tests. Backend implementation (`@paperforge/api`), shared domain contracts (`@paperforge/shared`), ESLint, and detailed repository documentation remain pending in subsequent Phase 01 tasks.
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm format:check
+pnpm dev:web
 ```
+
+- **Local Frontend URL**: `http://127.0.0.1:5173` (Vite development server; `/api` proxy preconfigured for future local backend at `http://127.0.0.1:3000`)
+- **Local Production Preview URL**: `http://127.0.0.1:4173` (via `pnpm build:web` then `pnpm preview:web`)
 
 ### Currently Available Scripts
 
+- `pnpm dev:web` — run the `@paperforge/web` Vite development server (`http://127.0.0.1:5173`)
+- `pnpm typecheck:web` — run strict TypeScript checks across `@paperforge/web` application and tooling configs
+- `pnpm test:web` — run frontend Vitest tests once
+- `pnpm test:web:watch` — run frontend Vitest tests in watch mode
+- `pnpm build:web` — type-check and build the `@paperforge/web` production bundle to `apps/web/dist/`
+- `pnpm preview:web` — serve the built frontend locally (`http://127.0.0.1:4173`)
 - `pnpm format` — format repository files with Prettier
 - `pnpm format:check` — verify formatting without modifying files
 
+### Frontend Feature Ownership Boundaries
+
+- `apps/web/src/features/dashboard` — shared workspace landing dashboard
+- `apps/web/src/features/exam` — Module 1 (Exam Question Paper Generator)
+- `apps/web/src/features/quiz` — Module 2 (Interactive Source-Based Quiz Generator)
+- `apps/web/src/features/editor` — Module 3 (Unified Assessment Editor & Export Engine)
+- `apps/web/src/features/slides` — Module 4 (Modular Slide Deck Generator)
+- `apps/web/src/app/`, `apps/web/src/components/`, `apps/web/src/pages/`, `apps/web/src/styles/` — centrally coordinated shared application shell, routing, UI primitives, feedback conventions, and design tokens
+
 ### Backend Environment Template
 
-An initial backend environment template is located at `apps/api/.env.example` (default backend port `3000`, frontend development port `5173`, and repository-root `.data/` reserved for future storage). Environment loading and validation will be implemented in PF-01.4.
+An initial backend environment template is located at `apps/api/.env.example` (default backend port `3000`, frontend development port `5173`, and repository-root `.data/` reserved for future storage). Backend initialization, environment loading, and validation remain pending for PF-01.4.
 
 ## AI Assistant Guidelines
 
