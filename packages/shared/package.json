@@ -1,0 +1,7 @@
+{
+  "name": "@paperforge/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "PaperForge shared TypeScript types and Zod validation contracts"
+}

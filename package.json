@@ -1,0 +1,20 @@
+{
+  "name": "paperforge",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "PaperForge AI-assisted educational authoring platform monorepo",
+  "packageManager": "pnpm@11.29.0",
+  "engines": {
+    "node": ">=24.22.3 <25",
+    "pnpm": "11.29.0"
+  },
+  "scripts": {
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "prettier": "3.10.1",
+    "typescript": "6.0.3"
+  }
+}
