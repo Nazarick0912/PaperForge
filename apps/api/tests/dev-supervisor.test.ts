@@ -215,24 +215,63 @@ async function waitForCondition(
   throw new Error(`Timed out after ${timeoutMs}ms waiting for condition`);
 }
 
-function makeWorkingEntry(marker: string): string {
-  return `
-    console.log("BOOT_${marker}_PID=" + process.pid);
+function makeCooperativeEntry(options: {
+  bootLogPrefix?: string;
+  gracefulStopMarker?: string;
+  readyTokenExpr?: string | null;
+}): string {
+  const bootLogLine = options.bootLogPrefix
+    ? `console.log(${JSON.stringify(options.bootLogPrefix)} + process.pid);`
+    : "";
+  const stopWriteExpr = options.gracefulStopMarker
+    ? `process.stdout.write(${JSON.stringify(`${options.gracefulStopMarker}\n`)}, finishExit);`
+    : "finishExit();";
+  const readySendBlock =
+    options.readyTokenExpr !== null
+      ? `
     process.send?.({
       type: "paperforge:ready",
       pid: process.pid,
-      token: process.env.PAPERFORGE_DEV_INSTANCE_TOKEN ?? null,
-    });
+      token: ${options.readyTokenExpr ?? "process.env.PAPERFORGE_DEV_INSTANCE_TOKEN ?? null"},
+    });`
+      : "";
+
+  return `
+    const keepAlive = setInterval(() => {}, 10_000);
+    let shuttingDown = false;
+    const shutdown = () => {
+      if (shuttingDown) {
+        return;
+      }
+      shuttingDown = true;
+      clearInterval(keepAlive);
+      if (process.connected) {
+        try {
+          process.disconnect?.();
+        } catch {
+          // Ignore already-closed IPC channel
+        }
+      }
+      const finishExit = () => process.exit(0);
+      setTimeout(finishExit, 50).unref();
+      ${stopWriteExpr}
+    };
+    process.on("SIGTERM", shutdown);
+    process.on("SIGINT", shutdown);
     process.on("message", (m) => {
       if (m && typeof m === "object" && "type" in m && m.type === "paperforge:shutdown") {
-        console.log("GRACEFUL_STOP_${marker}");
-        process.disconnect?.();
-        process.exit(0);
+        shutdown();
       }
     });
-    const keepAlive = setInterval(() => {}, 10_000);
-    process.once("exit", () => clearInterval(keepAlive));
+    ${bootLogLine}${readySendBlock}
   `;
+}
+
+function makeWorkingEntry(marker: string): string {
+  return makeCooperativeEntry({
+    bootLogPrefix: `BOOT_${marker}_PID=`,
+    gracefulStopMarker: `GRACEFUL_STOP_${marker}`,
+  });
 }
 
 type OwnedHandleLike = Pick<ChildProcess, "pid" | "exitCode" | "signalCode" | "kill"> &
@@ -839,16 +878,9 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
 
     writeFileSync(
       entryFile,
-      `
-        process.send?.({ type: "paperforge:ready", pid: process.pid, token: "wrong-token" });
-        process.on("message", (m) => {
-          if (m && typeof m === "object" && "type" in m && m.type === "paperforge:shutdown") {
-            process.disconnect?.();
-            process.exit(0);
-          }
-        });
-        setInterval(() => {}, 10_000);
-      `,
+      makeCooperativeEntry({
+        readyTokenExpr: '"wrong-token"',
+      }),
       "utf8",
     );
 
@@ -882,6 +914,8 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
       () => sup.getLogs().includes("BOOT_V1_PID=") && sup.getLogs().includes(INITIAL_READY_LOG),
       8_000,
     );
+    const v1Pid = Number(sup.getLogs().match(/BOOT_V1_PID=(\d+)/)?.[1]);
+    expect(v1Pid).toBeGreaterThan(0);
     expect(sup.proc.exitCode).toBeNull();
 
     writeFileSync(entryFile, `throw new Error("POST_READY_BROKEN_EDIT");\n`, "utf8");
@@ -891,6 +925,7 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
         sup.getLogs().includes("Watching for file changes to recover"),
       8_000,
     );
+    expect(isProcessAlive(v1Pid)).toBe(false);
     expect(sup.proc.exitCode).toBeNull();
 
     writeFileSync(entryFile, makeWorkingEntry("V2"), "utf8");
@@ -898,12 +933,16 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
       () => sup.getLogs().includes("BOOT_V2_PID=") && sup.getLogs().includes(REPLACEMENT_READY_LOG),
       8_000,
     );
+    const v2Pid = Number(sup.getLogs().match(/BOOT_V2_PID=(\d+)/)?.[1]);
+    expect(v2Pid).toBeGreaterThan(0);
     expect(sup.proc.exitCode).toBeNull();
 
     sup.requestShutdown("SIGTERM");
     const { code } = await sup.waitForExit(5_000);
     expect(code).toBe(0);
     expect(sup.getLogs()).toContain("GRACEFUL_STOP_V2");
+    expect(sup.getLogs().match(/GRACEFUL_STOP_V2/g) ?? []).toHaveLength(1);
+    expect(isProcessAlive(v2Pid)).toBe(false);
   }, 20_000);
 
   it("enforces replacement readiness deadlines, terminates timed-out replacements (including via SIGKILL escalation), stays recoverable without retry loops, and recovers on next valid edit", async () => {
@@ -925,16 +964,18 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
         sup.getLogs().includes("BOOT_INITIAL_PID=") && sup.getLogs().includes(INITIAL_READY_LOG),
       8_000,
     );
-    const initialPidMatch = sup.getLogs().match(/BOOT_INITIAL_PID=(\d+)/);
-    expect(initialPidMatch).not.toBeNull();
+    const initialPid = Number(sup.getLogs().match(/BOOT_INITIAL_PID=(\d+)/)?.[1]);
+    expect(initialPid).toBeGreaterThan(0);
 
-    // 2-3. Source edit spawns a replacement that withholds valid readiness (sends wrong token and ignores shutdown).
+    // 2-3. Source edit spawns a replacement that withholds valid readiness and ignores both IPC
+    // shutdown and graceful SIGTERM/SIGINT so both Windows and POSIX exercise bounded SIGKILL escalation.
     writeFileSync(
       entryFile,
       `
+        process.on("SIGTERM", () => {});
+        process.on("SIGINT", () => {});
         console.log("STALLED_REPL_PID=" + process.pid);
         process.send?.({ type: "paperforge:ready", pid: process.pid, token: "stale-wrong-token" });
-        // Intentionally ignore paperforge:shutdown to verify bounded SIGKILL escalation
         setInterval(() => {}, 10_000);
       `,
       "utf8",
@@ -943,6 +984,7 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
     await waitForCondition(() => sup.getLogs().includes("STALLED_REPL_PID="), 8_000);
     const stalledPid = Number(sup.getLogs().match(/STALLED_REPL_PID=(\d+)/)?.[1]);
     expect(stalledPid).toBeGreaterThan(0);
+    expect(isProcessAlive(initialPid)).toBe(false);
 
     // 4-6. Replacement exceeds its own 900ms deadline, logs diagnostic, and is actually terminated.
     await waitForCondition(
@@ -984,6 +1026,8 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
     const { code } = await sup.waitForExit(5_000);
     expect(code).toBe(0);
     expect(sup.getLogs()).toContain("GRACEFUL_STOP_RECOVERED");
+    expect(sup.getLogs().match(/GRACEFUL_STOP_RECOVERED/g) ?? []).toHaveLength(1);
+    expect(isProcessAlive(recoveredPid)).toBe(false);
   }, 20_000);
 
   it("ignores stale ready messages from a stopping child and preserves edits arriving during failed-child cleanup without overlapping children", async () => {
@@ -1003,34 +1047,65 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
       () => sup.getLogs().includes("BOOT_BASE_PID=") && sup.getLogs().includes(INITIAL_READY_LOG),
       8_000,
     );
+    const basePid = Number(sup.getLogs().match(/BOOT_BASE_PID=(\d+)/)?.[1]);
+    expect(basePid).toBeGreaterThan(0);
 
-    // Replacement withholds readiness, then delays exit 500ms on shutdown while emitting a late stale ready message.
+    // Replacement withholds readiness, then delays exit 500ms on shutdown (handling both IPC and
+    // POSIX SIGTERM/SIGINT idempotently so OS signals do not prematurely kill the delayed window
+    // or trigger duplicate shutdown operations) while emitting a late stale ready message.
     writeFileSync(
       entryFile,
       `
-        console.log("SLOW_STOP_PID=" + process.pid);
+        const keepAlive = setInterval(() => {}, 10_000);
+        let stopping = false;
+        const beginSlowShutdown = () => {
+          if (stopping) {
+            return;
+          }
+          stopping = true;
+          console.log("SLOW_STOP_BEGIN");
+          // Attempt to send a stale ready message after stop has started (must be ignored)
+          if (process.connected) {
+            try {
+              process.send?.({
+                type: "paperforge:ready",
+                pid: process.pid,
+                token: process.env.PAPERFORGE_DEV_INSTANCE_TOKEN ?? null,
+              });
+            } catch {
+              // Ignore IPC send errors if channel closed concurrently
+            }
+          }
+          setTimeout(() => {
+            clearInterval(keepAlive);
+            if (process.connected) {
+              try {
+                process.disconnect?.();
+              } catch {
+                // Ignore already-closed IPC channel
+              }
+            }
+            const finishExit = () => process.exit(0);
+            setTimeout(finishExit, 50).unref();
+            process.stdout.write("SLOW_STOP_DONE\\n", finishExit);
+          }, 500);
+        };
+        process.on("SIGTERM", beginSlowShutdown);
+        process.on("SIGINT", beginSlowShutdown);
         process.on("message", (m) => {
           if (m && typeof m === "object" && "type" in m && m.type === "paperforge:shutdown") {
-            console.log("SLOW_STOP_BEGIN");
-            // Attempt to send a stale ready message after stop has started (must be ignored)
-            process.send?.({
-              type: "paperforge:ready",
-              pid: process.pid,
-              token: process.env.PAPERFORGE_DEV_INSTANCE_TOKEN ?? null,
-            });
-            setTimeout(() => {
-              console.log("SLOW_STOP_DONE");
-              process.disconnect?.();
-              process.exit(0);
-            }, 500);
+            beginSlowShutdown();
           }
         });
-        setInterval(() => {}, 10_000);
+        console.log("SLOW_STOP_PID=" + process.pid);
       `,
       "utf8",
     );
 
     await waitForCondition(() => sup.getLogs().includes("SLOW_STOP_BEGIN"), 6_000);
+    const slowStopPid = Number(sup.getLogs().match(/SLOW_STOP_PID=(\d+)/)?.[1]);
+    expect(slowStopPid).toBeGreaterThan(0);
+    expect(isProcessAlive(basePid)).toBe(false);
 
     // Edit arrives WHILE the timed-out replacement is still shutting down (500ms cleanup window).
     writeFileSync(entryFile, makeWorkingEntry("AFTER_CLEANUP"), "utf8");
@@ -1044,18 +1119,27 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
     );
 
     // Verify replacement did NOT overlap: SLOW_STOP_DONE must precede BOOT_AFTER_CLEANUP_PID,
+    // duplicate IPC + OS signals must NOT trigger duplicate slow-shutdown executions,
     // and the stale ready message sent during SLOW_STOP_BEGIN must NOT have triggered "replacement is ready".
     const logs = sup.getLogs();
+    expect(logs.match(/SLOW_STOP_BEGIN/g) ?? []).toHaveLength(1);
+    expect(logs.match(/SLOW_STOP_DONE/g) ?? []).toHaveLength(1);
     const slowDoneIdx = logs.indexOf("SLOW_STOP_DONE");
     const afterCleanupBootIdx = logs.indexOf("BOOT_AFTER_CLEANUP_PID=");
     const readyLogIdx = logs.indexOf(REPLACEMENT_READY_LOG);
     expect(slowDoneIdx).toBeGreaterThan(-1);
     expect(afterCleanupBootIdx).toBeGreaterThan(slowDoneIdx);
     expect(readyLogIdx).toBeGreaterThan(afterCleanupBootIdx);
+    expect(isProcessAlive(slowStopPid)).toBe(false);
+
+    const afterCleanupPid = Number(logs.match(/BOOT_AFTER_CLEANUP_PID=(\d+)/)?.[1]);
+    expect(afterCleanupPid).toBeGreaterThan(0);
 
     sup.requestShutdown("SIGTERM");
     const { code } = await sup.waitForExit(5_000);
     expect(code).toBe(0);
+    expect(sup.getLogs()).toContain("GRACEFUL_STOP_AFTER_CLEANUP");
+    expect(isProcessAlive(afterCleanupPid)).toBe(false);
   }, 20_000);
 
   it("clears failed child state on a genuine post-readiness spawn error (no process created) and recovers on the next source edit", async () => {
@@ -1098,6 +1182,8 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
       () => sup.getLogs().includes("BOOT_SPAWN1_PID=") && sup.getLogs().includes(INITIAL_READY_LOG),
       8_000,
     );
+    const spawn1Pid = Number(sup.getLogs().match(/BOOT_SPAWN1_PID=(\d+)/)?.[1]);
+    expect(spawn1Pid).toBeGreaterThan(0);
 
     // Trigger 2nd spawn (simulated genuine spawn error)
     writeFileSync(entryFile, makeWorkingEntry("SPAWN2_SKIPPED"), "utf8");
@@ -1107,6 +1193,7 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
         sup.getLogs().includes("Watching for file changes to recover"),
       8_000,
     );
+    expect(isProcessAlive(spawn1Pid)).toBe(false);
     expect(sup.proc.exitCode).toBeNull();
 
     // Trigger 3rd spawn (real recovery)
@@ -1117,27 +1204,25 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
         sup.getLogs().includes(REPLACEMENT_READY_LOG),
       8_000,
     );
+    const spawn3Pid = Number(sup.getLogs().match(/BOOT_SPAWN3_OK_PID=(\d+)/)?.[1]);
+    expect(spawn3Pid).toBeGreaterThan(0);
 
     sup.requestShutdown("SIGTERM");
     const { code } = await sup.waitForExit(5_000);
     expect(code).toBe(0);
+    expect(sup.getLogs()).toContain("GRACEFUL_STOP_SPAWN3_OK");
+    expect(isProcessAlive(spawn3Pid)).toBe(false);
   }, 20_000);
 
   it("shuts down cleanly and clears timers when terminated while a child is awaiting readiness", async () => {
     const { dir, srcDir, entryFile } = createFixtureWorkspace("pf-dev-sup-shutdown-pending-");
     writeFileSync(
       entryFile,
-      `
-        console.log("PENDING_BOOT_PID=" + process.pid);
-        process.on("message", (m) => {
-          if (m && typeof m === "object" && "type" in m && m.type === "paperforge:shutdown") {
-            console.log("PENDING_SHUTDOWN_ACK");
-            process.disconnect?.();
-            process.exit(0);
-          }
-        });
-        setInterval(() => {}, 10_000);
-      `,
+      makeCooperativeEntry({
+        bootLogPrefix: "PENDING_BOOT_PID=",
+        gracefulStopMarker: "PENDING_SHUTDOWN_ACK",
+        readyTokenExpr: null,
+      }),
       "utf8",
     );
 
@@ -1160,6 +1245,7 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
     expect(code).toBe(0);
     expect(elapsedMs).toBeLessThan(5_000);
     expect(sup.getLogs()).toContain("PENDING_SHUTDOWN_ACK");
+    expect(sup.getLogs().match(/PENDING_SHUTDOWN_ACK/g) ?? []).toHaveLength(1);
     expect(isProcessAlive(pendingPid)).toBe(false);
   }, 15_000);
 
@@ -1214,10 +1300,14 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
         sup.getLogs().includes(REPLACEMENT_READY_LOG),
       8_000,
     );
+    const recoveredPid = Number(sup.getLogs().match(/BOOT_IPC_RECOVERED_PID=(\d+)/)?.[1]);
+    expect(recoveredPid).toBeGreaterThan(0);
 
     sup.requestShutdown("SIGTERM");
     const { code } = await sup.waitForExit(5_000);
     expect(code).toBe(0);
+    expect(sup.getLogs()).toContain("GRACEFUL_STOP_IPC_RECOVERED");
+    expect(isProcessAlive(recoveredPid)).toBe(false);
   }, 20_000);
 
   it("R3: retains ownership across async IPC shutdown-send EPIPE on real PaperForge backend, terminates child via escalation, and starts replacement on same port", async () => {
@@ -1598,9 +1688,14 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
     expect(isProcessAlive(child1Pid)).toBe(false);
     processRegistry.retireDescendant(child1Pid);
 
+    const child2Pid = Number(sup.getLogs().match(/KILLFAIL_SPAWN_2_PID=(\d+)/)?.[1]);
+    expect(child2Pid).toBeGreaterThan(0);
+
     sup.requestShutdown("SIGTERM");
     const { code } = await sup.waitForExit(5_000);
     expect(code).toBe(0);
+    expect(sup.getLogs()).toContain("GRACEFUL_STOP_KILLFAIL_V2");
+    expect(isProcessAlive(child2Pid)).toBe(false);
   }, 20_000);
 
   describe("OBS-026 / PF-01.7-R2: OwnedProcessRegistry safe cleanup, unresolved-handle reporting, and failed-assertion fixture teardown", () => {
