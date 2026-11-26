@@ -18,8 +18,7 @@ This guide defines a lightweight collaboration workflow for our four-member CAT3
    ```
 4. Verify your local baseline before making changes:
    ```bash
-   pnpm typecheck
-   pnpm test
+   pnpm check
    ```
 
 See [docs/development/setup.md](./docs/development/setup.md) for detailed startup commands, ports, environment precedence, and troubleshooting.
@@ -62,7 +61,7 @@ PaperForge uses a lightweight two-tier review rule:
 - **Shared foundation & cross-module changes** (`packages/shared/`, `apps/web/src/{app,components,lib/api,pages,styles,features/dashboard}/`, `apps/api/src/{app.ts,index.ts,config,middleware,routes}/`, future shared `services/` or `infrastructure/`, and root manifests/configs):
   1. Propose the contract or interface change to the **foundation coordinator (Module 1 developer)** and any **affected module developers** before modifying shared code.
   2. Document any new or changed shared schema in `@paperforge/shared` via its single public entry point (`packages/shared/src/index.ts`).
-  3. Verify all workspaces (`pnpm typecheck`, `pnpm test`, `pnpm build`, `pnpm format:check`) before requesting review.
+  3. Verify all workspaces (`pnpm check`) before requesting review.
 
 ## 6. Commit-Message Conventions
 
@@ -85,19 +84,24 @@ Examples from existing history and future module work:
 
 Keep commits atomic and clean. Never commit `.env` files, API keys, confidential exam papers, SQLite databases, build outputs (`dist/`), or files under `.data/`.
 
-## 7. Verification Before Integration
+## 7. Verification Before Integration & Inspecting CI Failures
 
 Before opening a pull request or asking to merge your branch into the coordinated team branch, run and verify:
 
 ```bash
-pnpm typecheck
-pnpm test
-pnpm build
-pnpm format:check
+pnpm check
 git diff --check
 ```
 
-Report actual command outcomes honestly in your pull request description — distinguish passed, failed, and skipped/unverified checks. _(Note: ESLint and a unified `pnpm check` gate are scheduled for PF-01.7 and do not exist yet.)_
+`pnpm check` runs five sequential fail-fast gates: `pnpm format:check`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, and `pnpm build`.
+
+GitHub Actions CI (`.github/workflows/ci.yml`) automatically runs `pnpm install --frozen-lockfile` and `pnpm check` on both `ubuntu-latest` and `windows-latest` (`fail-fast: false`) for pushes and pull requests. To inspect a failed CI run:
+
+1. Open the **Actions** tab (or the failing status check on your pull request) and inspect **both** `Verify (ubuntu-latest)` and `Verify (windows-latest)` jobs so OS-specific issues are not missed.
+2. Expand the **Run quality gate** step to identify which stage failed (`format:check`, `lint`, `typecheck`, `test`, or `build`).
+3. Reproduce and fix the failure locally using `pnpm check` (or the individual stage command such as `pnpm lint`, `pnpm format:check`, or `pnpm test:api`), then push the fix.
+
+Report actual command outcomes honestly in your pull request description — distinguish passed, failed, and skipped/unverified checks.
 
 ## 8. Reviewing & Resolving Merge Conflicts Safely
 
@@ -106,4 +110,4 @@ Report actual command outcomes honestly in your pull request description — dis
    - Inspect both sides of every conflicting hunk carefully.
    - **Never silently overwrite or discard another developer's changes** (especially in `packages/shared`, `apps/api/src/app.ts`, `apps/web/src/app/router.tsx`, or `pnpm-lock.yaml`).
    - If the conflict touches shared contracts or another module's code, coordinate with that developer before finalizing the resolution.
-3. After resolving conflicts, rerun `pnpm install --frozen-lockfile` (if manifests changed), `pnpm typecheck`, `pnpm test`, and `pnpm format:check` before updating your pull request.
+3. After resolving conflicts, rerun `pnpm install --frozen-lockfile` (if manifests changed) and `pnpm check` before updating your pull request.

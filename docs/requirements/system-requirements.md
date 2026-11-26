@@ -156,7 +156,7 @@ See [Module 4 Specification](../modules/04-slide-generator.md) for full workflow
 - **`NFR-REL-001` — Supervised Local Lifecycle & Explicit Startup Failure Handling** _(Implemented (platform verification pending))_
   Development orchestration (`pnpm dev`) shall verify backend IPC readiness within bounded startup deadlines, fail explicitly on initial startup errors, recover automatically on post-readiness source-edit failures, and close listeners on shutdown or supervisor IPC loss. Integrated `pnpm start` shall fail explicitly if `apps/web/dist/index.html` is missing rather than silently serving stale or missing builds. _(Implemented and covered by automated tests; final native Windows shutdown and clean-install cross-platform verification remain pending PF-01.7/PF-01.8.)_
 - **`NFR-REL-002` — Automated Multi-Workspace Verification** _(Partially implemented)_
-  All workspaces shall maintain strict TypeScript compilation (`pnpm typecheck`), Vitest test suites (`pnpm test`), dependency-ordered builds (`pnpm build`), and Prettier formatting (`pnpm format:check`), to be unified with ESLint and CI under `pnpm check` in PF-01.7.
+  All workspaces shall maintain strict TypeScript compilation (`pnpm typecheck`), Vitest test suites (`pnpm test`), dependency-ordered builds (`pnpm build`), Prettier formatting (`pnpm format:check`), ESLint linting (`pnpm lint`), unified fail-fast `pnpm check`, and cross-platform CI (`.github/workflows/ci.yml`). _(ESLint, `pnpm check`, and `.github/workflows/ci.yml` are implemented locally in PF-01.7; hosted GitHub Actions CI execution and independent PF-01.7 review remain pending.)_
 
 ### Usability & Maintainability
 
@@ -169,12 +169,11 @@ See [Module 4 Specification](../modules/04-slide-generator.md) for full workflow
 
 ## 5. Current Prototype Constraints
 
-- **Implemented foundation only**: The 301 currently passing tests verify infrastructure contracts, HTTP middleware, environment validation, frontend shell/API client, static containment, and dev supervision — **not** educational authoring functionality.
+- **Implemented foundation only**: The 338 currently passing tests verify infrastructure contracts, HTTP middleware, environment validation, frontend shell/API client, static containment, and dev supervision — **not** educational authoring functionality.
 - **Single-machine local execution & security boundary**: Loopback-only (`127.0.0.1`) binding reduces accidental network exposure risk for this single-user prototype, but does not constitute complete security (authentication is deferred and local same-machine processes are not isolated).
-- **Pending cross-platform verification**: Automated foundation tests pass in the current environment, while final native Windows interactive shutdown, clean-install cross-platform portability, real-browser regression checks, and remaining platform-specific filesystem-link tests remain pending PF-01.7/PF-01.8.
+- **Pending cross-platform verification**: Automated foundation tests and local `pnpm check` pass on Windows, while hosted GitHub Actions CI (`ubuntu-latest` + `windows-latest`), final native Windows interactive shutdown, clean-install cross-platform portability, real-browser regression checks, and remaining platform-specific filesystem-link tests remain pending commit/push and PF-01.8.
 - **Text-based source files first**: Initial ingestion targets digitally authored `PDF`, `DOCX`, and `PPTX` documents; scanned images/PDFs and diagrams are not expected to parse completely.
 - **No real AI provider yet**: External LLM calls are not implemented; Phase 02 starts with a deterministic mock provider.
-- **Unimplemented quality gates**: ESLint, `pnpm check`, and automated CI workflows are pending PF-01.7.
 
 ---
 

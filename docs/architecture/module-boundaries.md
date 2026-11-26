@@ -21,7 +21,7 @@ Shared foundation files are **centrally coordinated** by the Module 1 developer 
 
 - **Repository root configuration**:
   - `package.json`, `pnpm-workspace.yaml`, `pnpm-lock.yaml`
-  - `tsconfig.base.json`, `.node-version`, `.prettierrc.json`, `.prettierignore`, `.editorconfig`, `.gitattributes`, `.gitignore`
+  - `tsconfig.json`, `tsconfig.base.json`, `eslint.config.mjs`, `.github/workflows/ci.yml`, `.node-version`, `.prettierrc.json`, `.prettierignore`, `.editorconfig`, `.gitattributes`, `.gitignore`
   - `AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `docs/`
 - **Shared contracts package**:
   - `packages/shared/` (`@paperforge/shared`) — compiled schemas and types exported from `packages/shared/src/index.ts` -> `packages/shared/dist/index.{js,d.ts}`
@@ -93,6 +93,21 @@ flowchart LR
 6. **Private file containment**:
    - Uploaded documents, SQLite databases, and generated private files must remain outside `apps/web/dist` and any statically served directory.
 
+### Automated Boundary Enforcement & Known Limitations
+
+`eslint.config.mjs` enforces static import boundaries via `pnpm lint` (and `pnpm check`) as a **lightweight development quality gate**, **not** an application security boundary:
+
+- **Enforced automatically**:
+  - **Static package-specifier imports** (`no-restricted-imports`): Blocks private `@paperforge/shared/*`, `@paperforge/api`, and `@paperforge/web` package/subpath imports repository-wide; blocks `node:*`, bare Node.js built-ins, and Hono packages in `apps/web/src/**/*.{ts,tsx}`; blocks React/Router/Lucide packages in `apps/api/src/**/*.ts`; and blocks Node.js built-ins, React, Hono, Vite, and Vitest in `packages/shared/src/**/*.ts`.
+  - **Static type-only imports and re-exports**: Both `no-restricted-imports` and `paperforge/enforce-boundaries` check `import type`, `export ... from`, and `export * from`.
+  - **Relative literal dynamic imports**: The custom `paperforge/enforce-boundaries` rule resolves relative specifiers (`./`, `../`) on static `import`, `export ... from`, `export * from`, and literal `import("./...")` / `import("../...")` expressions against the repository root to block traversal into `packages/shared/`, cross-workspace `apps/web` <-> `apps/api` imports, escapes out of `packages/shared/src/`, and cross-feature imports among `exam`, `quiz`, `editor`, and `slides` (while permitting shared composition such as `apps/web/src/app/router.tsx`).
+- **Known limitations (not caught automatically)**:
+  - **Literal dynamic package imports**: Dynamic package imports such as `import("node:fs")`, `import("hono")`, or `import("@paperforge/shared/dist/index.js")` bypass ESLint's built-in `no-restricted-imports` package checks (which inspect static declarations/re-exports) and are not intercepted by the relative-path custom rule.
+  - **Browser JavaScript files**: Non-TypeScript files under `apps/web/src/**/*.{js,mjs,cjs}` are covered by base JS and relative-boundary rules, but do not receive the TypeScript-scoped (`apps/web/src/**/*.{ts,tsx}`) browser-runtime package filter.
+  - **Computed dynamic imports, `require` calls, and unconfigured aliases**: Computed dynamic imports (`import(expr)`), `require(...)` calls, and hypothetical unconfigured path aliases cannot be statically resolved.
+
+Code review and TypeScript compilation (`pnpm typecheck`) remain essential alongside `pnpm lint`.
+
 ## 4. Coordinating Shared Changes
 
 Routine work inside a module's own feature/module directory (`apps/web/src/features/<module>/` and `apps/api/src/modules/<module>/`) can proceed independently on a module branch.
@@ -105,6 +120,6 @@ Changes to any **shared foundation** path require coordination before merging:
 2. **Propose before implementing**:
    - Share the intended contract or interface change with the foundation coordinator (Module 1 developer) and every affected module owner before altering shared files.
 3. **Verify across all workspaces**:
-   - Run `pnpm typecheck`, `pnpm test`, `pnpm build`, and `pnpm format:check` after any shared change so no module is broken silently.
+   - Run `pnpm check` after any shared change so no module is broken silently.
 
 See [CONTRIBUTING.md](../../CONTRIBUTING.md) for the full team branching and integration workflow.

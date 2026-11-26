@@ -136,18 +136,24 @@ For compiled integrated runs (`pnpm start`):
 
 ## 6. Verification Commands (Implemented Today)
 
-| Command                                                | What It Checks                                                                                                                                         |
-| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `pnpm typecheck`                                       | Compiles `@paperforge/shared`, then runs strict `tsc` type-checks across `@paperforge/api` and `@paperforge/web`                                       |
-| `pnpm typecheck:shared` / `:api` / `:web`              | Workspace-scoped type-checking (`:api` and `:web` build shared exports first)                                                                          |
-| `pnpm test`                                            | Builds `@paperforge/shared`, then runs Vitest across all three workspaces (currently 301 foundation tests across 10 files: 60 shared, 180 API, 61 web) |
-| `pnpm test:shared` / `:api` / `:web`                   | Workspace-scoped Vitest single run                                                                                                                     |
-| `pnpm test:shared:watch` / `:api:watch` / `:web:watch` | Workspace-scoped Vitest watch mode                                                                                                                     |
-| `pnpm build`                                           | Full dependency-ordered build (`@paperforge/shared` -> `@paperforge/api` -> `@paperforge/web`)                                                         |
-| `pnpm format`                                          | Formats repository files with Prettier                                                                                                                 |
-| `pnpm format:check`                                    | Verifies Prettier formatting without modifying files                                                                                                   |
+| Command                                                | What It Checks                                                                                                                                             |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm check`                                           | Sequential fail-fast quality gate: `format:check` -> `lint` -> `typecheck` -> `test` -> `build` (stops on first failure; never rewrites source files)      |
+| `pnpm format`                                          | Formats repository files with Prettier                                                                                                                     |
+| `pnpm format:check`                                    | Verifies Prettier formatting without modifying files                                                                                                       |
+| `pnpm lint`                                            | Runs ESLint (`eslint.config.mjs`) across authored JS/TS/TSX files, React Hooks rules, and static import boundaries without modifying source files          |
+| `pnpm lint:fix`                                        | Runs ESLint with `--fix` to apply supported autofixes when explicitly invoked                                                                              |
+| `pnpm typecheck`                                       | Compiles `@paperforge/shared`, then runs strict `tsc` type-checks across `@paperforge/api` and `@paperforge/web`                                           |
+| `pnpm typecheck:shared` / `:api` / `:web`              | Workspace-scoped type-checking (`:api` and `:web` build shared exports first)                                                                              |
+| `pnpm test`                                            | Builds `@paperforge/shared`, then runs Vitest across all three workspaces (currently 338 foundation tests across 10 files: 60 shared, 215 API, 63 web)     |
+| `pnpm test:watch`                                      | Builds `@paperforge/shared`, then runs Vitest watch across workspaces in parallel (prefer `pnpm test:{shared,api,web}:watch` for focused interactive runs) |
+| `pnpm test:shared` / `:api` / `:web`                   | Workspace-scoped Vitest single run                                                                                                                         |
+| `pnpm test:shared:watch` / `:api:watch` / `:web:watch` | Workspace-scoped Vitest watch mode                                                                                                                         |
+| `pnpm build`                                           | Full dependency-ordered build (`@paperforge/shared` -> `@paperforge/api` -> `@paperforge/web`)                                                             |
 
-> **Not Yet Implemented (Pending PF-01.7)**: ESLint, a unified `pnpm check` script, and CI workflows are planned for PF-01.7 and do not exist in `package.json` yet.
+### Continuous Integration (GitHub Actions)
+
+`.github/workflows/ci.yml` defines a cross-platform CI matrix (`ubuntu-latest` and `windows-latest`, `fail-fast: false`, `permissions: { contents: read }`) that installs Node.js `24.22.3` and `pnpm` `11.29.0`, runs `pnpm install --frozen-lockfile`, and runs `pnpm check`. _(Hosted GitHub Actions execution is pending the PF-01.7 commit and push.)_
 
 ## 7. Stopping Local Servers Cleanly
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (implemented in PF-01.1 through PF-01.5; ESLint and CI pending PF-01.7)
+Accepted (core stack implemented in PF-01.1 through PF-01.5; ESLint, `pnpm check`, and `.github/workflows/ci.yml` implemented locally in PF-01.7, pending independent review and hosted CI execution)
 
 ## Context
 
@@ -29,10 +29,11 @@ Adopt and preserve the following pinned baseline stack:
   - Hono (`4.13.22`) with `@hono/node-server` (`2.1.11`) and `content-type` (`3.1.1`).
   - Zod (`4.6.7`) for startup environment validation and HTTP request/response validation.
   - Supervised Node.js + `tsx` (`4.23.15`) development runner (`apps/api/scripts/dev.mjs`).
-- **Testing and Formatting**:
+- **Testing, Linting, Formatting, and CI**:
   - Vitest (`5.1.1`) across all three workspaces, plus Testing Library and `jsdom` for `@paperforge/web`.
-  - Prettier (`3.10.1`) for formatting and ESLint (planned in PF-01.7) for linting, rather than Biome.
+  - Prettier (`3.10.1`) for formatting and ESLint (`10.15.0` with `@eslint/js` `10.0.1`, `typescript-eslint` `8.74.0`, `globals` `17.14.0`, and `eslint-plugin-react-hooks` `7.1.1`) via root flat config `eslint.config.mjs` (non-type-aware recommended baseline + import-boundary enforcement), rather than Biome.
   - `concurrently` (`10.0.7`) for unified multi-process `pnpm dev`.
+  - GitHub Actions CI (`.github/workflows/ci.yml`) running `pnpm check` across `ubuntu-latest` and `windows-latest`.
 
 ## Alternatives Considered
 
@@ -52,13 +53,13 @@ Adopt and preserve the following pinned baseline stack:
 ### Negative / Trade-offs
 
 - Developers must follow native React state and the shared `fetch` client patterns rather than installing familiar third-party abstractions without approval.
-- ESLint and `pnpm check` are not yet active until PF-01.7, leaving static lint checks manual until then.
+- Non-type-aware ESLint relies on the separate `tsc` (`pnpm typecheck`) gate for full type checking and cannot statically resolve computed dynamic imports.
 
 ## Scope and Unresolved Details
 
-- **Implemented**: All pinned core runtime, frontend, backend, testing, and Prettier dependencies listed above.
+- **Implemented**: All pinned core runtime, frontend, backend, testing, Prettier, and root ESLint dependencies listed above, unified `pnpm check` gate, and `.github/workflows/ci.yml` (hosted CI execution pending commit and push; PF-01.7 pending independent review).
 - **Unresolved / Pending**:
-  - ESLint configuration, `pnpm check` script, and CI workflow (PF-01.7).
+  - Hosted GitHub Actions CI verification on `ubuntu-latest` and `windows-latest` after commit/push.
   - SQLite database driver and ORM selection (Phase 02).
   - Document extraction libraries (`unpdf`, `Mammoth`, `MarkItDown` candidates — see [ADR-0005](./0005-document-ingestion-scope.md)).
   - Rich-text/math editor and export libraries (`Tiptap`, `KaTeX`, `Playwright`, XML writer, `PptxGenJS` candidates — Phase 02+).

@@ -16,8 +16,18 @@ import { getMimeType } from "hono/utils/mime";
 import { createErrorResponse, notFoundHandler } from "./errors.js";
 
 const FORBIDDEN_ENCODED_PATH_PATTERN = /%(?:2e|2f|5c|00)/i;
-const CONTROL_CHAR_PATTERN = /[\u0000-\u001f\u007f]/;
 const RFC9110_QVALUE_PATTERN = /^(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$/;
+const SERVED_HTML_CHARSET = "utf-8";
+
+function hasControlChar(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x1f || code === 0x7f) {
+      return true;
+    }
+  }
+  return false;
+}
 
 export interface FrontendFs {
   lstatSync: (
@@ -127,7 +137,7 @@ export function resolveContainedRegularFile(
       segment.includes("/") ||
       segment.includes("\\") ||
       segment.includes(":") ||
-      CONTROL_CHAR_PATTERN.test(segment)
+      hasControlChar(segment)
     ) {
       return { status: "blocked" };
     }
@@ -263,6 +273,7 @@ export function assertFrontendBuildExists(
         }
         throw new Error(
           `Expected physical workspace directory "${dirToCheck}" is missing or invalid.`,
+          { cause: error },
         );
       }
     }
@@ -339,7 +350,7 @@ function parseSafeRequestSegments(
       candidate.includes("\\") ||
       candidate.includes("\0") ||
       candidate.includes("//") ||
-      CONTROL_CHAR_PATTERN.test(candidate) ||
+      hasControlChar(candidate) ||
       FORBIDDEN_ENCODED_PATH_PATTERN.test(candidate)
     ) {
       return { ok: false };
@@ -378,7 +389,7 @@ function parseSafeRequestSegments(
       decoded.includes("/") ||
       decoded.includes("\\") ||
       decoded.includes(":") ||
-      CONTROL_CHAR_PATTERN.test(decoded)
+      hasControlChar(decoded)
     ) {
       return { ok: false };
     }
@@ -439,17 +450,63 @@ function splitAcceptHeader(acceptHeader: string): string[] {
   return ranges;
 }
 
-// Evaluates RFC 9110 §12.5.1 Accept negotiation specifically for `text/html`.
-// Specificity precedence: `text/html` (3) > `text/*` (2) > `*/*` (1).
-// An explicit more-specific rejection (`text/html;q=0` or `text/html;q=0.`) is never
-// overridden by a less-specific wildcard such as `*/*;q=1`.
-// Missing or empty Accept header defaults to acceptable (`true`).
+function parseAcceptParameterValue(rawValue: string): string | null {
+  if (rawValue.length === 0) {
+    return null;
+  }
+
+  if (!rawValue.startsWith('"')) {
+    if (/\s|"/.test(rawValue)) {
+      return null;
+    }
+    return rawValue;
+  }
+
+  let unquoted = "";
+  let closed = false;
+  for (let i = 1; i < rawValue.length; i++) {
+    const ch = rawValue[i];
+    if (ch === "\\") {
+      if (i + 1 >= rawValue.length) {
+        return null;
+      }
+      unquoted += rawValue[i + 1];
+      i++;
+      continue;
+    }
+    if (ch === '"') {
+      if (i !== rawValue.length - 1) {
+        return null;
+      }
+      closed = true;
+      break;
+    }
+    unquoted += ch;
+  }
+
+  return closed ? unquoted : null;
+}
+
+// Evaluates RFC 9110 §12.5.1 Accept negotiation against the served HTML representation
+// (`text/html; charset=utf-8`).
+// - RFC 9110 removed the older `accept-ext` grammar: `q` is recognized as the weight regardless
+//   of parameter ordering, and all non-`q` parameters remain media-range constraints matched
+//   against the served representation (whether appearing before or after `q`).
+// - A range with non-matching parameters (e.g. `text/html;level=3;q=0`, `charset=iso-8859-1`,
+//   or `text/html;q=0;charset=iso-8859-1`) does not match the served representation and cannot
+//   override a matching wildcard such as `*/*;q=1`.
+// - Specificity precedence: `text/html` (3) > `text/*` (2) > `*/*` (1), broken by higher count
+//   of matching media-range parameters (e.g. `text/html;charset=utf-8` > `text/html`).
+// - Duplicate `q` parameters, invalid `q` values, or malformed parameters cause that media range
+//   to be ignored.
+// - Missing or empty Accept header defaults to acceptable (`true`).
 export function acceptsHtmlNavigation(acceptHeader: string | undefined): boolean {
   if (!acceptHeader || acceptHeader.trim().length === 0) {
     return true;
   }
 
-  let bestSpecificity = 0;
+  let bestBaseSpecificity = 0;
+  let bestParamSpecificity = -1;
   let bestQuality = 0;
 
   for (const rawRange of splitAcceptHeader(acceptHeader)) {
@@ -461,19 +518,22 @@ export function acceptsHtmlNavigation(acceptHeader: string | undefined): boolean
     const [rawMediaType = "", ...rawParams] = splitMediaRangeParams(range);
     const mediaType = rawMediaType.trim().toLowerCase();
 
-    let specificity = 0;
+    let baseSpecificity: number;
     if (mediaType === "text/html") {
-      specificity = 3;
+      baseSpecificity = 3;
     } else if (mediaType === "text/*") {
-      specificity = 2;
+      baseSpecificity = 2;
     } else if (mediaType === "*/*") {
-      specificity = 1;
+      baseSpecificity = 1;
     } else {
       continue;
     }
 
     let quality = 1;
-    let invalidQuality = false;
+    let seenQ = false;
+    let matchedParamCount = 0;
+    let matchesRepresentation = true;
+    let malformed = false;
 
     for (const rawParam of rawParams) {
       const param = rawParam.trim();
@@ -483,37 +543,66 @@ export function acceptsHtmlNavigation(acceptHeader: string | undefined): boolean
 
       const eqIndex = param.indexOf("=");
       if (eqIndex <= 0) {
-        continue;
-      }
-
-      const name = param.slice(0, eqIndex).trim().toLowerCase();
-      if (name !== "q") {
-        continue;
-      }
-
-      const value = param.slice(eqIndex + 1).trim();
-      if (!RFC9110_QVALUE_PATTERN.test(value)) {
-        invalidQuality = true;
+        malformed = true;
         break;
       }
 
-      quality = Number.parseFloat(value);
-      break;
+      const name = param.slice(0, eqIndex).trim().toLowerCase();
+      const rawValue = param.slice(eqIndex + 1).trim();
+
+      if (name.length === 0 || /\s/.test(name)) {
+        malformed = true;
+        break;
+      }
+
+      if (name === "q") {
+        if (seenQ || !RFC9110_QVALUE_PATTERN.test(rawValue)) {
+          malformed = true;
+          break;
+        }
+        seenQ = true;
+        quality = Number.parseFloat(rawValue);
+        continue;
+      }
+
+      const parsedValue = parseAcceptParameterValue(rawValue);
+      if (parsedValue === null) {
+        malformed = true;
+        break;
+      }
+
+      // Media-range parameter must match the served HTML representation (`text/html; charset=utf-8`)
+      // regardless of whether it appears before or after `q` (RFC 9110 §12.5.1).
+      if (name === "charset" && parsedValue.toLowerCase() === SERVED_HTML_CHARSET) {
+        matchedParamCount += 1;
+      } else {
+        matchesRepresentation = false;
+        break;
+      }
     }
 
-    if (invalidQuality) {
+    if (malformed || !matchesRepresentation) {
       continue;
     }
 
-    if (specificity > bestSpecificity) {
-      bestSpecificity = specificity;
+    const isMoreSpecific =
+      baseSpecificity > bestBaseSpecificity ||
+      (baseSpecificity === bestBaseSpecificity && matchedParamCount > bestParamSpecificity);
+
+    if (isMoreSpecific) {
+      bestBaseSpecificity = baseSpecificity;
+      bestParamSpecificity = matchedParamCount;
       bestQuality = quality;
-    } else if (specificity === bestSpecificity && quality > bestQuality) {
+    } else if (
+      baseSpecificity === bestBaseSpecificity &&
+      matchedParamCount === bestParamSpecificity &&
+      quality > bestQuality
+    ) {
       bestQuality = quality;
     }
   }
 
-  return bestSpecificity > 0 && bestQuality > 0;
+  return bestBaseSpecificity > 0 && bestQuality > 0;
 }
 
 function isSpaFallbackEligiblePath(segments: readonly string[]): boolean {

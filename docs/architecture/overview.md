@@ -42,7 +42,11 @@ Separating by runtime layer keeps browser code strictly isolated from Node.js AP
   - Centralized structured JSON error handling (`errorHandler`, `notFoundHandler`) with sanitized error envelopes and validated header preservation (`WWW-Authenticate`, `Allow`, `Retry-After`).
   - Integrated compiled frontend serving (`apps/api/src/middleware/frontend.ts`) with physical build-root verification, symlink/junction rejection, per-request regular-file containment, and RFC 9110 SPA `Accept` negotiation. _(Core behavior is implemented and covered by automated tests; remaining platform-specific filesystem-link tests are pending PF-01.7/PF-01.8.)_
   - Development process supervisor (`apps/api/scripts/dev.mjs`) running Node.js with the `tsx` loader, verifying child IPC readiness and restarting on `apps/api/src` or `packages/shared/dist` changes. _(Final interactive native Windows shutdown and real-browser regression checks remain pending PF-01.7/PF-01.8.)_
-- **Verification**: 301 automated foundation tests across 10 Vitest files (60 shared, 180 API, 61 web).
+- **Quality gates & CI (PF-01.7 — implemented locally, pending independent acceptance & hosted CI execution)**:
+  - Root ESLint flat configuration (`eslint.config.mjs`) with static workspace/module boundary enforcement (lightweight development quality gate; see [Module Boundaries](./module-boundaries.md) for explicit enforcement scope and limitations).
+  - Solution-style TypeScript editor discovery (`tsconfig.json`, `apps/web/tsconfig.json`).
+  - Unified fail-fast `pnpm check` gate (`format:check` -> `lint` -> `typecheck` -> `test` -> `build`) and cross-platform GitHub Actions CI workflow (`.github/workflows/ci.yml` targeting `ubuntu-latest` and `windows-latest`; hosted CI execution pending commit and push).
+- **Verification**: 338 automated foundation tests across 10 Vitest files (60 shared, 215 API, 63 web).
 
 ### Planned for Phase 02+ (Not Yet Implemented)
 
@@ -51,7 +55,6 @@ Separating by runtime layer keeps browser code strictly isolated from Node.js AP
 - Shared backend AI-provider abstraction (deterministic mock provider first, followed by controlled evaluation of eligible Gemini API free-tier models).
 - SQLite local persistence (driver and ORM selection pending) and private local file storage under repository-root `.data/`.
 - Module 1–4 educational APIs, frontend authoring workflows, and export engines (PDF, Moodle XML, optional DOCX, PPTX).
-- ESLint, unified `pnpm check` gate, and CI workflow (PF-01.7).
 
 ## 3. Execution Modes
 

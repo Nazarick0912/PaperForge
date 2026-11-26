@@ -14,6 +14,10 @@
     "typecheck": "pnpm run build:shared && pnpm --filter @paperforge/api typecheck && pnpm --filter @paperforge/web typecheck",
     "build": "pnpm run build:shared && pnpm --filter @paperforge/api build && pnpm --filter @paperforge/web build",
     "test": "pnpm run build:shared && pnpm --filter @paperforge/shared test && pnpm --filter @paperforge/api test && pnpm --filter @paperforge/web test",
+    "test:watch": "pnpm run build:shared && pnpm -r --parallel run test:watch",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "check": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build",
     "start": "pnpm --filter @paperforge/api start:integrated",
     "dev:shared": "pnpm --filter @paperforge/shared dev",
     "typecheck:shared": "pnpm --filter @paperforge/shared typecheck",
@@ -36,8 +40,13 @@
     "format:check": "prettier --check ."
   },
   "devDependencies": {
+    "@eslint/js": "10.0.1",
     "concurrently": "10.0.7",
+    "eslint": "10.15.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "globals": "17.14.0",
     "prettier": "3.10.1",
-    "typescript": "6.0.3"
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.74.0"
   }
 }

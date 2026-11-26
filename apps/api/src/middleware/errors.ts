@@ -99,11 +99,82 @@ function isValidCalendarTimestamp(
   return true;
 }
 
+function compareSubYear(
+  monthA: number,
+  dayA: number,
+  hourA: number,
+  minuteA: number,
+  secondA: number,
+  monthB: number,
+  dayB: number,
+  hourB: number,
+  minuteB: number,
+  secondB: number,
+): number {
+  const partsA = [monthA, dayA, hourA, minuteA, secondA] as const;
+  const partsB = [monthB, dayB, hourB, minuteB, secondB] as const;
+  for (let i = 0; i < partsA.length; i++) {
+    const a = partsA[i]!;
+    const b = partsB[i]!;
+    if (a !== b) {
+      return a - b;
+    }
+  }
+  return 0;
+}
+
+/**
+ * Resolves an obsolete RFC 850 two-digit year per RFC 9110 §5.6.7:
+ * a timestamp that appears to be more than 50 years in the future relative to
+ * `referenceDate` is interpreted as representing the most recent year in the
+ * past that had the same last two digits.
+ */
+function resolveRfc850Year(
+  twoDigitYear: number,
+  monthIndex: number,
+  day: number,
+  hour: number,
+  minute: number,
+  second: number,
+  referenceDate: Date,
+): number {
+  const refYear = referenceDate.getUTCFullYear();
+  const centuryBase = Math.floor(refYear / 100) * 100;
+  let year = centuryBase + twoDigitYear;
+
+  if (year - refYear < -50) {
+    year += 100;
+  } else if (year - refYear > 50) {
+    year -= 100;
+  }
+
+  const subYearDelta = compareSubYear(
+    monthIndex,
+    day,
+    hour,
+    minute,
+    second === 60 ? 59 : second,
+    referenceDate.getUTCMonth(),
+    referenceDate.getUTCDate(),
+    referenceDate.getUTCHours(),
+    referenceDate.getUTCMinutes(),
+    referenceDate.getUTCSeconds(),
+  );
+
+  if (year - refYear === 50 && subYearDelta > 0) {
+    year -= 100;
+  } else if (year - refYear === -50 && subYearDelta <= 0) {
+    year += 100;
+  }
+
+  return year;
+}
+
 /**
  * Validates RFC 9110 §5.6.7 HTTP-date formats (IMF-fixdate, RFC 850, and asctime).
  * Explicitly rejects ISO-8601 and arbitrary Date.parse() formats.
  */
-function isValidHttpDate(value: string): boolean {
+export function isValidHttpDate(value: string, referenceDate: Date = new Date()): boolean {
   const imfMatch = IMF_FIXDATE_PATTERN.exec(value);
   if (imfMatch) {
     const [, dayName, dd, mon, yyyy, hh, mm, ss] = imfMatch;
@@ -130,18 +201,21 @@ function isValidHttpDate(value: string): boolean {
     if (monthIndex === undefined || !dd || !yy || !hh || !mm || !ss) {
       return false;
     }
+    const day = Number.parseInt(dd, 10);
+    const hour = Number.parseInt(hh, 10);
+    const minute = Number.parseInt(mm, 10);
+    const second = Number.parseInt(ss, 10);
     const twoDigitYear = Number.parseInt(yy, 10);
-    const fullYear = twoDigitYear >= 70 ? 1900 + twoDigitYear : 2000 + twoDigitYear;
-    return isValidCalendarTimestamp(
-      fullYear,
+    const fullYear = resolveRfc850Year(
+      twoDigitYear,
       monthIndex,
-      Number.parseInt(dd, 10),
-      Number.parseInt(hh, 10),
-      Number.parseInt(mm, 10),
-      Number.parseInt(ss, 10),
-      dayName,
-      true,
+      day,
+      hour,
+      minute,
+      second,
+      referenceDate,
     );
+    return isValidCalendarTimestamp(fullYear, monthIndex, day, hour, minute, second, dayName, true);
   }
 
   const asctimeMatch = ASCTIME_DATE_PATTERN.exec(value);

@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
@@ -132,7 +133,7 @@ function spawnSupervisor(options: {
 
   const waitForExit = (timeoutMs = 10_000) =>
     new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
-      if (proc.exitCode !== null) {
+      if (proc.exitCode !== null || proc.signalCode !== null) {
         resolve({ code: proc.exitCode, signal: proc.signalCode });
         return;
       }
@@ -148,7 +149,7 @@ function spawnSupervisor(options: {
     });
 
   const requestShutdown = (signal: "SIGINT" | "SIGTERM" = "SIGTERM") => {
-    if (proc.exitCode === null && proc.connected) {
+    if (proc.exitCode === null && proc.signalCode === null && proc.connected) {
       proc.send({ type: "test:signal", signal });
     }
   };
@@ -176,7 +177,7 @@ function trackSpawnedChild(proc: ChildProcess): SpawnedChild {
 
   const waitForExit = (timeoutMs = 10_000) =>
     new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
-      if (proc.exitCode !== null) {
+      if (proc.exitCode !== null || proc.signalCode !== null) {
         resolve({ code: proc.exitCode, signal: proc.signalCode });
         return;
       }
@@ -234,12 +235,529 @@ function makeWorkingEntry(marker: string): string {
   `;
 }
 
+type OwnedHandleLike = Pick<ChildProcess, "pid" | "exitCode" | "signalCode" | "kill"> &
+  Partial<Pick<ChildProcess, "once" | "removeListener">>;
+
+type TerminationAttemptOutcome = "delivered" | "refused" | "error";
+
+interface SignalAttemptRecord {
+  method: "ipc" | "signal";
+  signal: string;
+  outcome: TerminationAttemptOutcome;
+  errorMessage?: string;
+}
+
+interface UnresolvedOwnedHandle {
+  kind: "supervisor" | "child" | "descendant";
+  pid: number | undefined;
+  label: string;
+  handle: OwnedHandleLike;
+  attempts: SignalAttemptRecord[];
+  waitError?: string;
+  reason: string;
+}
+
+interface TeardownHookEntry {
+  label: string;
+  run: () => Promise<void> | void;
+}
+
+interface TeardownHookError {
+  label: string;
+  errorMessage: string;
+}
+
+interface DescendantRecord {
+  pid: number;
+  label: string;
+  retired: boolean;
+  ownerExitedAbnormally: boolean;
+  ownedHandle?: OwnedHandleLike;
+}
+
+interface SkippedUnverifiedCleanup {
+  pid: number;
+  label: string;
+  reason: string;
+}
+
+interface CleanupReport {
+  attemptedSignals: number;
+  deliveredSignals: number;
+  refusedOrFailedSignals: number;
+  confirmedExits: number;
+  unresolvedHandles: UnresolvedOwnedHandle[];
+  skippedUnverified: SkippedUnverifiedCleanup[];
+  teardownHookErrors: TeardownHookError[];
+}
+
+interface OwnedProcessRegistryOptions {
+  supervisorGracefulTimeoutMs?: number;
+  childGracefulTimeoutMs?: number;
+  forceKillWaitTimeoutMs?: number;
+  onSkippedUnverified?: (entry: SkippedUnverifiedCleanup) => void;
+  onUnresolvedHandle?: (entry: UnresolvedOwnedHandle) => void;
+}
+
+function isHandleExited(handle: Pick<ChildProcess, "exitCode" | "signalCode">): boolean {
+  return handle.exitCode !== null || handle.signalCode !== null;
+}
+
+function formatErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function waitForOwnedHandleExit(
+  handle: OwnedHandleLike,
+  timeoutMs: number,
+): Promise<{ exited: boolean; waitError?: string }> {
+  if (isHandleExited(handle)) {
+    return { exited: true };
+  }
+  if (typeof handle.once !== "function") {
+    return {
+      exited: false,
+      waitError:
+        "Owned handle does not expose an exit event listener; process termination could not be confirmed",
+    };
+  }
+  return new Promise<{ exited: boolean; waitError?: string }>((resolve) => {
+    const onExit = () => {
+      clearTimeout(timer);
+      resolve({ exited: isHandleExited(handle) });
+    };
+    const timer = setTimeout(() => {
+      handle.removeListener?.("exit", onExit);
+      resolve({
+        exited: isHandleExited(handle),
+        waitError: `Owned handle (pid ${handle.pid ?? "unknown"}) did not confirm exit within ${timeoutMs}ms`,
+      });
+    }, timeoutMs);
+    handle.once?.("exit", onExit);
+  });
+}
+
+function buildUnresolvedHandle(params: {
+  kind: UnresolvedOwnedHandle["kind"];
+  label: string;
+  handle: OwnedHandleLike;
+  attempts: SignalAttemptRecord[];
+  waitError?: string;
+}): UnresolvedOwnedHandle {
+  const lastSigkill = [...params.attempts]
+    .reverse()
+    .find((attempt) => attempt.method === "signal" && attempt.signal === "SIGKILL");
+
+  let reason: string;
+  if (lastSigkill?.outcome === "refused") {
+    reason =
+      'SIGKILL request was refused (kill("SIGKILL") returned false) and process exit remained unconfirmed after bounded wait';
+  } else if (lastSigkill?.outcome === "error") {
+    reason = `SIGKILL request failed (${lastSigkill.errorMessage ?? "unknown error"}) and process exit remained unconfirmed after bounded wait`;
+  } else if (lastSigkill?.outcome === "delivered") {
+    reason =
+      "SIGKILL signal was delivered, but signal delivery does not prove termination and process exit remained unconfirmed after bounded wait";
+  } else {
+    reason = "process exit remained unconfirmed after bounded cleanup wait";
+  }
+
+  return {
+    kind: params.kind,
+    pid: params.handle.pid,
+    label: params.label,
+    handle: params.handle,
+    attempts: params.attempts,
+    waitError: params.waitError,
+    reason,
+  };
+}
+
+function assertCleanupResolved(report: CleanupReport): void {
+  if (report.unresolvedHandles.length === 0 && report.teardownHookErrors.length === 0) {
+    return;
+  }
+
+  const lines: string[] = [];
+  for (const hookError of report.teardownHookErrors) {
+    lines.push(`- teardown hook "${hookError.label}" failed: ${hookError.errorMessage}`);
+  }
+  for (const unresolved of report.unresolvedHandles) {
+    const attemptsSummary =
+      unresolved.attempts.length > 0
+        ? unresolved.attempts
+            .map(
+              (attempt) =>
+                `${attempt.method}:${attempt.signal}=${attempt.outcome}${attempt.errorMessage ? `(${attempt.errorMessage})` : ""}`,
+            )
+            .join(", ")
+        : "none";
+    const waitDetail = unresolved.waitError ? ` [waitError: ${unresolved.waitError}]` : "";
+    lines.push(
+      `- ${unresolved.kind} "${unresolved.label}" (pid ${unresolved.pid ?? "unknown"}): ${unresolved.reason}; attempts=[${attemptsSummary}]${waitDetail}`,
+    );
+  }
+
+  throw new Error(
+    `[dev-supervisor.test] Test cleanup left ${report.unresolvedHandles.length} unresolved owned handle(s) and ${report.teardownHookErrors.length} teardown hook error(s):\n${lines.join("\n")}`,
+  );
+}
+
+/**
+ * Tracks owned ChildProcess handles and indirect descendant records for bounded test cleanup.
+ *
+ * Security / reliability invariants (OBS-026 & PF-01.7-R2):
+ * - Direct owned ChildProcess handles are stopped cooperatively (IPC / SIGTERM -> bounded SIGKILL)
+ *   only while `exitCode === null && signalCode === null`.
+ * - Termination attempts, accepted signal deliveries, refused/failed signal deliveries, and
+ *   confirmed process exits are tracked separately; signal delivery never implies confirmed exit.
+ * - Any owned handle whose termination remains unconfirmed after bounded wait is retained,
+ *   explicitly reported, and surfaced to the test runner rather than silently ignored.
+ * - Indirect numeric PIDs without an owned ChildProcess handle are NEVER signaled solely because
+ *   the numeric PID was recorded earlier and currently exists (eliminating PID-reuse / TOCTOU risk
+ *   even after abnormal supervisor termination). Unverified indirect records are reported safely.
+ */
+class OwnedProcessRegistry {
+  private readonly supervisors: SpawnedSupervisor[] = [];
+  private readonly children: SpawnedChild[] = [];
+  private readonly descendants = new Map<number, DescendantRecord>();
+  private readonly teardownHooks: TeardownHookEntry[] = [];
+  private readonly unresolvedHandles: UnresolvedOwnedHandle[] = [];
+  private readonly supervisorGracefulTimeoutMs: number;
+  private readonly childGracefulTimeoutMs: number;
+  private readonly forceKillWaitTimeoutMs: number;
+  private readonly onSkippedUnverified: (entry: SkippedUnverifiedCleanup) => void;
+  private readonly onUnresolvedHandle: (entry: UnresolvedOwnedHandle) => void;
+
+  constructor(options: OwnedProcessRegistryOptions = {}) {
+    this.supervisorGracefulTimeoutMs = options.supervisorGracefulTimeoutMs ?? 5_000;
+    this.childGracefulTimeoutMs = options.childGracefulTimeoutMs ?? 3_000;
+    this.forceKillWaitTimeoutMs = options.forceKillWaitTimeoutMs ?? 2_000;
+    this.onSkippedUnverified =
+      options.onSkippedUnverified ??
+      ((entry) => {
+        console.warn(
+          `[dev-supervisor.test] Skipping unsafe numeric-PID cleanup for "${entry.label}" (pid ${entry.pid}): ${entry.reason}`,
+        );
+      });
+    this.onUnresolvedHandle =
+      options.onUnresolvedHandle ??
+      ((entry) => {
+        console.error(
+          `[dev-supervisor.test] Unresolved owned ${entry.kind} cleanup for "${entry.label}" (pid ${entry.pid ?? "unknown"}): ${entry.reason}${entry.waitError ? ` (${entry.waitError})` : ""}`,
+        );
+      });
+  }
+
+  trackSupervisor(sup: SpawnedSupervisor): SpawnedSupervisor {
+    this.supervisors.push(sup);
+    return sup;
+  }
+
+  trackChild(child: SpawnedChild): SpawnedChild {
+    this.children.push(child);
+    return child;
+  }
+
+  registerTeardownHook(label: string, run: () => Promise<void> | void): void {
+    this.teardownHooks.push({ label, run });
+  }
+
+  getUnresolvedHandles(): readonly UnresolvedOwnedHandle[] {
+    return [...this.unresolvedHandles];
+  }
+
+  trackDescendant(
+    pid: number,
+    label: string,
+    owner?: SpawnedSupervisor,
+    ownedHandle?: OwnedHandleLike,
+  ): void {
+    if (!Number.isInteger(pid) || pid <= 0) {
+      return;
+    }
+    const record: DescendantRecord = {
+      pid,
+      label,
+      retired: false,
+      ownerExitedAbnormally: false,
+      ownedHandle,
+    };
+    this.descendants.set(pid, record);
+    owner?.proc.once("exit", (code, signal) => {
+      if (code === 0 && signal === null) {
+        // Clean supervisor exit confirms its managed child was already stopped.
+        record.retired = true;
+      } else {
+        record.ownerExitedAbnormally = true;
+      }
+    });
+  }
+
+  retireDescendant(pid: number): void {
+    const record = this.descendants.get(pid);
+    if (record) {
+      record.retired = true;
+    }
+  }
+
+  isDescendantRetired(pid: number): boolean {
+    return this.descendants.get(pid)?.retired ?? false;
+  }
+
+  async cleanup(): Promise<CleanupReport> {
+    let attemptedSignals = 0;
+    let deliveredSignals = 0;
+    let refusedOrFailedSignals = 0;
+    let confirmedExits = 0;
+    const unresolvedHandles: UnresolvedOwnedHandle[] = [];
+    const skippedUnverified: SkippedUnverifiedCleanup[] = [];
+    const teardownHookErrors: TeardownHookError[] = [];
+
+    const attemptHandleKill = (
+      handle: OwnedHandleLike,
+      signal: NodeJS.Signals,
+    ): SignalAttemptRecord => {
+      attemptedSignals += 1;
+      try {
+        const delivered = handle.kill(signal);
+        if (delivered) {
+          deliveredSignals += 1;
+          return { method: "signal", signal, outcome: "delivered" };
+        }
+        refusedOrFailedSignals += 1;
+        return { method: "signal", signal, outcome: "refused" };
+      } catch (error) {
+        refusedOrFailedSignals += 1;
+        return {
+          method: "signal",
+          signal,
+          outcome: "error",
+          errorMessage: formatErrorMessage(error),
+        };
+      }
+    };
+
+    // Run registered fixture teardown hooks (LIFO) before tearing down supervisors/children so
+    // deliberate fault-injection fixtures always release blocked real children even after assertion failures.
+    while (this.teardownHooks.length > 0) {
+      const hook = this.teardownHooks.pop();
+      if (!hook) {
+        continue;
+      }
+      try {
+        await hook.run();
+      } catch (error) {
+        teardownHookErrors.push({
+          label: hook.label,
+          errorMessage: formatErrorMessage(error),
+        });
+      }
+    }
+
+    const remainingSupervisors: SpawnedSupervisor[] = [];
+    while (this.supervisors.length > 0) {
+      const sup = this.supervisors.pop();
+      if (!sup || isHandleExited(sup.proc)) {
+        continue;
+      }
+
+      const attempts: SignalAttemptRecord[] = [];
+      if (sup.proc.connected) {
+        try {
+          sup.requestShutdown("SIGTERM");
+          attempts.push({ method: "ipc", signal: "SIGTERM", outcome: "delivered" });
+        } catch (error) {
+          attempts.push({
+            method: "ipc",
+            signal: "SIGTERM",
+            outcome: "error",
+            errorMessage: formatErrorMessage(error),
+          });
+        }
+      } else {
+        attempts.push(attemptHandleKill(sup.proc, "SIGTERM"));
+      }
+
+      let gracefulTimedOut = false;
+      try {
+        await sup.waitForExit(this.supervisorGracefulTimeoutMs);
+      } catch {
+        gracefulTimedOut = true;
+      }
+
+      if (isHandleExited(sup.proc)) {
+        confirmedExits += 1;
+        continue;
+      }
+
+      if (gracefulTimedOut || !isHandleExited(sup.proc)) {
+        attempts.push(attemptHandleKill(sup.proc, "SIGKILL"));
+      }
+
+      let finalWaitError: string | undefined;
+      try {
+        await sup.waitForExit(this.forceKillWaitTimeoutMs);
+      } catch (error) {
+        finalWaitError = formatErrorMessage(error);
+      }
+
+      if (isHandleExited(sup.proc)) {
+        confirmedExits += 1;
+      } else {
+        const entry = buildUnresolvedHandle({
+          kind: "supervisor",
+          label: `supervisor:${sup.proc.pid ?? "unknown"}`,
+          handle: sup.proc,
+          attempts,
+          waitError: finalWaitError,
+        });
+        unresolvedHandles.push(entry);
+        remainingSupervisors.push(sup);
+        this.onUnresolvedHandle(entry);
+      }
+    }
+    this.supervisors.push(...remainingSupervisors);
+
+    const remainingChildren: SpawnedChild[] = [];
+    while (this.children.length > 0) {
+      const child = this.children.pop();
+      if (!child || isHandleExited(child.proc)) {
+        continue;
+      }
+
+      const attempts: SignalAttemptRecord[] = [];
+      if (child.proc.connected) {
+        try {
+          const sent = child.proc.send({ type: "paperforge:shutdown", signal: "SIGTERM" });
+          attempts.push({
+            method: "ipc",
+            signal: "SIGTERM",
+            outcome: sent ? "delivered" : "refused",
+          });
+        } catch (error) {
+          attempts.push({
+            method: "ipc",
+            signal: "SIGTERM",
+            outcome: "error",
+            errorMessage: formatErrorMessage(error),
+          });
+        }
+      } else {
+        attempts.push(attemptHandleKill(child.proc, "SIGTERM"));
+      }
+
+      let gracefulTimedOut = false;
+      try {
+        await child.waitForExit(this.childGracefulTimeoutMs);
+      } catch {
+        gracefulTimedOut = true;
+      }
+
+      if (isHandleExited(child.proc)) {
+        confirmedExits += 1;
+        continue;
+      }
+
+      if (gracefulTimedOut || !isHandleExited(child.proc)) {
+        attempts.push(attemptHandleKill(child.proc, "SIGKILL"));
+      }
+
+      let finalWaitError: string | undefined;
+      try {
+        await child.waitForExit(this.forceKillWaitTimeoutMs);
+      } catch (error) {
+        finalWaitError = formatErrorMessage(error);
+      }
+
+      if (isHandleExited(child.proc)) {
+        confirmedExits += 1;
+      } else {
+        const entry = buildUnresolvedHandle({
+          kind: "child",
+          label: `child:${child.proc.pid ?? "unknown"}`,
+          handle: child.proc,
+          attempts,
+          waitError: finalWaitError,
+        });
+        unresolvedHandles.push(entry);
+        remainingChildren.push(child);
+        this.onUnresolvedHandle(entry);
+      }
+    }
+    this.children.push(...remainingChildren);
+
+    for (const [pid, record] of [...this.descendants.entries()]) {
+      if (record.retired) {
+        this.descendants.delete(pid);
+        continue;
+      }
+
+      if (record.ownedHandle) {
+        if (isHandleExited(record.ownedHandle)) {
+          record.retired = true;
+          this.descendants.delete(pid);
+          continue;
+        }
+
+        const attempts: SignalAttemptRecord[] = [attemptHandleKill(record.ownedHandle, "SIGKILL")];
+        const waitOutcome = await waitForOwnedHandleExit(
+          record.ownedHandle,
+          this.forceKillWaitTimeoutMs,
+        );
+        if (waitOutcome.exited && isHandleExited(record.ownedHandle)) {
+          confirmedExits += 1;
+          record.retired = true;
+          this.descendants.delete(pid);
+        } else {
+          const entry = buildUnresolvedHandle({
+            kind: "descendant",
+            label: record.label,
+            handle: record.ownedHandle,
+            attempts,
+            waitError: waitOutcome.waitError,
+          });
+          unresolvedHandles.push(entry);
+          this.onUnresolvedHandle(entry);
+        }
+        continue;
+      }
+
+      const reason = record.ownerExitedAbnormally
+        ? "owning supervisor exited abnormally; process identity for numeric PID cannot be verified safely"
+        : "no owned ChildProcess handle is available to verify current process identity";
+      const entry: SkippedUnverifiedCleanup = {
+        pid: record.pid,
+        label: record.label,
+        reason,
+      };
+      skippedUnverified.push(entry);
+      this.onSkippedUnverified(entry);
+      record.retired = true;
+      this.descendants.delete(pid);
+    }
+
+    this.unresolvedHandles.length = 0;
+    this.unresolvedHandles.push(...unresolvedHandles);
+
+    return {
+      attemptedSignals,
+      deliveredSignals,
+      refusedOrFailedSignals,
+      confirmedExits,
+      unresolvedHandles,
+      skippedUnverified,
+      teardownHookErrors,
+    };
+  }
+}
+
 describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backend lifecycle", () => {
-  const activeSupervisors: SpawnedSupervisor[] = [];
-  const activeChildren: SpawnedChild[] = [];
-  const trackedPids: number[] = [];
+  let processRegistry = new OwnedProcessRegistry();
   const tempDirs: string[] = [];
   const activeServers: http.Server[] = [];
+
+  const trackSupervisor = (sup: SpawnedSupervisor) => processRegistry.trackSupervisor(sup);
+  const trackChild = (child: SpawnedChild) => processRegistry.trackChild(child);
 
   const createFixtureWorkspace = (prefix: string) => {
     const dir = mkdtempSync(path.join(tmpdir(), prefix));
@@ -258,71 +776,29 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
   };
 
   afterEach(async () => {
-    while (activeSupervisors.length > 0) {
-      const sup = activeSupervisors.pop();
-      if (sup && sup.proc.exitCode === null) {
-        sup.requestShutdown("SIGTERM");
-        try {
-          await sup.waitForExit(5_000);
-        } catch {
-          try {
-            sup.proc.kill("SIGKILL");
-          } catch {
-            // Ignore already exited
-          }
-          await sup.waitForExit(2_000).catch(() => undefined);
+    let cleanupReport: CleanupReport | undefined;
+    try {
+      cleanupReport = await processRegistry.cleanup();
+    } finally {
+      processRegistry = new OwnedProcessRegistry();
+
+      while (activeServers.length > 0) {
+        const server = activeServers.pop();
+        if (server) {
+          await new Promise<void>((resolve) => server.close(() => resolve()));
+        }
+      }
+
+      while (tempDirs.length > 0) {
+        const dir = tempDirs.pop();
+        if (dir) {
+          rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
         }
       }
     }
 
-    while (activeChildren.length > 0) {
-      const child = activeChildren.pop();
-      if (child && child.proc.exitCode === null) {
-        try {
-          if (child.proc.connected) {
-            child.proc.send({ type: "paperforge:shutdown", signal: "SIGTERM" });
-          } else {
-            child.proc.kill("SIGTERM");
-          }
-        } catch {
-          // Ignore send/kill errors
-        }
-        try {
-          await child.waitForExit(3_000);
-        } catch {
-          try {
-            child.proc.kill("SIGKILL");
-          } catch {
-            // Ignore already exited
-          }
-          await child.waitForExit(2_000).catch(() => undefined);
-        }
-      }
-    }
-
-    while (trackedPids.length > 0) {
-      const pid = trackedPids.pop();
-      if (pid && isProcessAlive(pid)) {
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch {
-          // Ignore already exited
-        }
-      }
-    }
-
-    while (activeServers.length > 0) {
-      const server = activeServers.pop();
-      if (server) {
-        await new Promise<void>((resolve) => server.close(() => resolve()));
-      }
-    }
-
-    while (tempDirs.length > 0) {
-      const dir = tempDirs.pop();
-      if (dir) {
-        rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
-      }
+    if (cleanupReport) {
+      assertCleanupResolved(cleanupReport);
     }
   });
 
@@ -331,7 +807,7 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
     writeFileSync(entryFile, `throw new Error("Arbitrary unexpected import-time boom");\n`, "utf8");
 
     const sup = spawnSupervisor({ cwd: dir, entryFile, watchDir: srcDir });
-    activeSupervisors.push(sup);
+    trackSupervisor(sup);
 
     const { code } = await sup.waitForExit(10_000);
     expect(code).not.toBe(0);
@@ -344,7 +820,7 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
     writeFileSync(entryFile, `process.exit(0);\n`, "utf8");
 
     const sup = spawnSupervisor({ cwd: dir, entryFile, watchDir: srcDir });
-    activeSupervisors.push(sup);
+    trackSupervisor(sup);
 
     const { code } = await sup.waitForExit(10_000);
     expect(code).toBe(1);
@@ -382,7 +858,7 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
       watchDir: srcDir,
       startupTimeoutMs: 600,
     });
-    activeSupervisors.push(sup);
+    trackSupervisor(sup);
 
     const { code } = await sup.waitForExit(10_000);
     expect(code).toBe(1);
@@ -399,7 +875,7 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
       watchDir: srcDir,
       startupTimeoutMs: 8_000,
     });
-    activeSupervisors.push(sup);
+    trackSupervisor(sup);
 
     // Deterministically wait until supervisor validates IPC readiness AND finishes registering watchers.
     await waitForCondition(
@@ -441,7 +917,7 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
       startupTimeoutMs: 900,
       gracefulStopTimeoutMs: 400,
     });
-    activeSupervisors.push(sup);
+    trackSupervisor(sup);
 
     // 1. Initial child reaches readiness and watchers finish registering.
     await waitForCondition(
@@ -521,7 +997,7 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
       startupTimeoutMs: 900,
       gracefulStopTimeoutMs: 1_500,
     });
-    activeSupervisors.push(sup);
+    trackSupervisor(sup);
 
     await waitForCondition(
       () => sup.getLogs().includes("BOOT_BASE_PID=") && sup.getLogs().includes(INITIAL_READY_LOG),
@@ -616,7 +1092,7 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
       startupTimeoutMs: 5_000,
       customRunnerPreamble,
     });
-    activeSupervisors.push(sup);
+    trackSupervisor(sup);
 
     await waitForCondition(
       () => sup.getLogs().includes("BOOT_SPAWN1_PID=") && sup.getLogs().includes(INITIAL_READY_LOG),
@@ -671,7 +1147,7 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
       watchDir: srcDir,
       startupTimeoutMs: 15_000,
     });
-    activeSupervisors.push(sup);
+    trackSupervisor(sup);
 
     await waitForCondition(() => sup.getLogs().includes("PENDING_BOOT_PID="), 8_000);
     const pendingPid = Number(sup.getLogs().match(/PENDING_BOOT_PID=(\d+)/)?.[1]);
@@ -714,7 +1190,7 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
       startupTimeoutMs: 8_000,
       gracefulStopTimeoutMs: 400,
     });
-    activeSupervisors.push(sup);
+    trackSupervisor(sup);
 
     await waitForCondition(
       () => sup.getLogs().includes("IPC_DROP_V1_PID=") && sup.getLogs().includes(INITIAL_READY_LOG),
@@ -762,18 +1238,28 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
           console.log("R3_REAL_EXIT_" + idx + "_PID=" + child.pid + "_CODE=" + code + "_SIG=" + sig);
         });
         if (idx === 1) {
-          // Simulate asynchronous EPIPE during shutdown-message delivery while real backend remains alive.
+          // Synchronize injected async EPIPE with live child #1 across both Windows and POSIX:
+          // on POSIX, stopChildRecord sends SIGTERM immediately after child.send(); withholding
+          // graceful SIGTERM on child #1 ensures the async send error deterministically runs while
+          // the real backend child is still alive, and that bounded SIGKILL escalation terminates it.
+          const origKill = child.kill.bind(child);
+          child.kill = function (sig) {
+            if (sig === "SIGKILL") {
+              return origKill("SIGKILL");
+            }
+            return false;
+          };
           child.send = function (msg, ...rest) {
             const cb = typeof rest[rest.length - 1] === "function" ? rest[rest.length - 1] : null;
             const err = Object.assign(new Error("write EPIPE"), { code: "EPIPE", syscall: "write" });
-            setTimeout(() => {
+            setImmediate(() => {
               console.log("R3_INJECTED_ASYNC_SEND_ERROR_WHILE_ALIVE=" + (child.exitCode === null));
               if (cb) {
                 cb(err);
               } else {
                 child.emit("error", err);
               }
-            }, 25);
+            });
             return false;
           };
         }
@@ -794,13 +1280,13 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
       },
       customRunnerPreamble,
     });
-    activeSupervisors.push(sup);
+    trackSupervisor(sup);
 
     // 1. Real backend #1 reaches readiness and serves HTTP 200.
     await waitForCondition(() => sup.getLogs().includes(INITIAL_READY_LOG), 10_000);
     const child1Pid = Number(sup.getLogs().match(/R3_REAL_SPAWN_1_PID=(\d+)/)?.[1]);
     expect(child1Pid).toBeGreaterThan(0);
-    trackedPids.push(child1Pid);
+    processRegistry.trackDescendant(child1Pid, "r3-epipe-child-1", sup);
 
     const res1 = await fetch(`http://127.0.0.1:${port}/api/v1/health`);
     expect(res1.status).toBe(200);
@@ -820,10 +1306,11 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
     const child2Pid = Number(logs.match(/R3_REAL_SPAWN_2_PID=(\d+)/)?.[1]);
     expect(child2Pid).toBeGreaterThan(0);
     expect(child2Pid).not.toBe(child1Pid);
-    trackedPids.push(child2Pid);
+    processRegistry.trackDescendant(child2Pid, "r3-epipe-child-2", sup);
 
     // Original child exited without manual intervention, before replacement spawned (no overlap).
     expect(isProcessAlive(child1Pid)).toBe(false);
+    processRegistry.retireDescendant(child1Pid);
     expect(logs).toContain("R3_INJECTED_ASYNC_SEND_ERROR_WHILE_ALIVE=true");
     expect(logs).toContain("Failed to deliver IPC shutdown message to PaperForge API");
     expect(logs).not.toContain("already in use");
@@ -872,11 +1359,21 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
         console.log("GENERIC_ERR_SPAWN_" + idx + "_PID=" + child.pid);
         if (idx === 1) {
           firstChild = child;
+          // Synchronize direct 'error' injection with live child #1 across both Windows and POSIX
+          // by withholding graceful SIGTERM on child #1 while preserving bounded SIGKILL escalation.
+          const origKill = child.kill.bind(child);
+          child.kill = function (sig) {
+            if (sig === "SIGKILL") {
+              return origKill("SIGKILL");
+            }
+            return false;
+          };
           // Also emit generic 'error' directly on child during shutdown send (bypassing send callback).
           child.send = function () {
-            setTimeout(() => {
+            setImmediate(() => {
+              console.log("R3_DIRECT_ERROR_WHILE_ALIVE=" + (child.exitCode === null));
               child.emit("error", Object.assign(new Error("direct child error during stop"), { code: "EPIPE" }));
-            }, 20);
+            });
             return false;
           };
         }
@@ -897,11 +1394,11 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
       },
       customRunnerPreamble,
     });
-    activeSupervisors.push(sup);
+    trackSupervisor(sup);
 
     await waitForCondition(() => sup.getLogs().includes(INITIAL_READY_LOG), 10_000);
     const child1Pid = Number(sup.getLogs().match(/GENERIC_ERR_SPAWN_1_PID=(\d+)/)?.[1]);
-    trackedPids.push(child1Pid);
+    processRegistry.trackDescendant(child1Pid, "r3-generic-err-child-1", sup);
 
     // Emit generic 'error' while child #1 is alive and idle: must NOT discard ownership or kill child.
     sup.proc.send({ type: "test:emit-live-error" });
@@ -918,8 +1415,10 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
       10_000,
     );
     const child2Pid = Number(sup.getLogs().match(/GENERIC_ERR_SPAWN_2_PID=(\d+)/)?.[1]);
-    trackedPids.push(child2Pid);
+    processRegistry.trackDescendant(child2Pid, "r3-generic-err-child-2", sup);
     expect(isProcessAlive(child1Pid)).toBe(false);
+    processRegistry.retireDescendant(child1Pid);
+    expect(sup.getLogs()).toContain("R3_DIRECT_ERROR_WHILE_ALIVE=true");
     expect(isProcessAlive(child2Pid)).toBe(true);
     expect(sup.getLogs()).not.toContain("already in use");
 
@@ -935,25 +1434,65 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
     expect(code).toBe(0);
   }, 25_000);
 
-  it("R3: retains ownership and withholds overlapping replacement when termination-signal delivery fails until actual child exit", async () => {
-    const { dir, srcDir, entryFile } = createFixtureWorkspace("pf-r3-kill-fail-");
+  async function startKillFailFixture(
+    registry: OwnedProcessRegistry,
+    workspacePrefix = "pf-r3-kill-fail-",
+  ) {
+    const { dir, srcDir, entryFile } = createFixtureWorkspace(workspacePrefix);
     writeFileSync(entryFile, makeWorkingEntry("KILLFAIL_V1"), "utf8");
 
     const customRunnerPreamble = `
       import { spawn as realSpawn } from "node:child_process";
       let spawnCount = 0;
       let firstChild = null;
+      let firstChildExited = false;
       let realKill = null;
-      process.on("message", (m) => {
-        if (m && typeof m === "object" && m.type === "test:force-real-exit" && firstChild && realKill) {
+      const releaseFirstChild = () => {
+        if (
+          firstChild &&
+          realKill &&
+          !firstChildExited &&
+          firstChild.exitCode === null &&
+          firstChild.signalCode === null
+        ) {
+          console.log("KILLFAIL_RELEASING_1_PID=" + firstChild.pid);
           realKill("SIGKILL");
         }
+      };
+      process.on("message", (m) => {
+        if (!m || typeof m !== "object") {
+          return;
+        }
+        if (m.type === "test:force-real-exit") {
+          releaseFirstChild();
+        } else if (m.type === "test:teardown-release") {
+          process.emit("SIGTERM");
+          releaseFirstChild();
+        }
+      });
+      process.once("disconnect", () => {
+        releaseFirstChild();
       });
       extraOptions.spawnProcess = (...args) => {
         spawnCount += 1;
         const idx = spawnCount;
         const child = realSpawn(...args);
         console.log("KILLFAIL_SPAWN_" + idx + "_PID=" + child.pid);
+        child.once("exit", (code, signal) => {
+          if (idx === 1) {
+            firstChildExited = true;
+          }
+          console.log(
+            "KILLFAIL_EXIT_" +
+              idx +
+              "_PID=" +
+              child.pid +
+              "_CODE=" +
+              String(code) +
+              "_SIG=" +
+              String(signal),
+          );
+        });
         if (idx === 1) {
           firstChild = child;
           realKill = child.kill.bind(child);
@@ -964,11 +1503,18 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
             }
             return false;
           };
-          let killAttempts = 0;
-          child.kill = () => {
-            killAttempts += 1;
-            if (killAttempts === 1) {
-              throw Object.assign(new Error("kill EPERM"), { code: "EPERM" });
+          // OBS-025: Fail termination-signal delivery consistently across Windows and POSIX
+          // (POSIX attempts SIGTERM before escalating to SIGKILL; Windows escalates directly to SIGKILL).
+          let sigkillAttempts = 0;
+          child.kill = (sig) => {
+            const signalName = sig ?? "SIGTERM";
+            console.log("KILLFAIL_SIGNAL_ATTEMPT=" + signalName);
+            if (signalName === "SIGKILL") {
+              sigkillAttempts += 1;
+              if (sigkillAttempts === 1) {
+                throw Object.assign(new Error("kill EPERM"), { code: "EPERM" });
+              }
+              return false;
             }
             return false;
           };
@@ -986,7 +1532,7 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
       killVerifyTimeoutMs: 200,
       customRunnerPreamble,
     });
-    activeSupervisors.push(sup);
+    registry.trackSupervisor(sup);
 
     await waitForCondition(
       () =>
@@ -995,13 +1541,43 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
       8_000,
     );
     const child1Pid = Number(sup.getLogs().match(/KILLFAIL_SPAWN_1_PID=(\d+)/)?.[1]);
-    trackedPids.push(child1Pid);
+    const child1ExitMarker = `KILLFAIL_EXIT_1_PID=${child1Pid}_`;
+    registry.trackDescendant(child1Pid, "r3-killfail-child-1", sup);
 
-    // Trigger restart while child #1 cannot be killed.
+    // Register unconditional teardown release BEFORE any assertions so a failed test assertion
+    // always bypasses the injected kill refusal and confirms real child #1 actually exits.
+    registry.registerTeardownHook("r3-killfail-child-1-release", async () => {
+      if (sup.getLogs().includes(child1ExitMarker)) {
+        registry.retireDescendant(child1Pid);
+        return;
+      }
+
+      if (!isHandleExited(sup.proc) && sup.proc.connected) {
+        sup.proc.send({ type: "test:teardown-release" });
+        await waitForCondition(() => sup.getLogs().includes(child1ExitMarker), 5_000);
+        registry.retireDescendant(child1Pid);
+        return;
+      }
+
+      throw new Error(
+        `Deliberately blocked child #1 (pid ${child1Pid}) did not confirm exit before fixture teardown and supervisor IPC channel was unavailable`,
+      );
+    });
+
+    return { dir, srcDir, entryFile, sup, child1Pid, child1ExitMarker };
+  }
+
+  it("R3: retains ownership and withholds overlapping replacement when termination-signal delivery fails until actual child exit", async () => {
+    const { entryFile, sup, child1Pid, child1ExitMarker } =
+      await startKillFailFixture(processRegistry);
+
+    // Trigger restart while child #1 cannot be terminated by IPC or OS signals.
     writeFileSync(entryFile, makeWorkingEntry("KILLFAIL_V2"), "utf8");
     await waitForCondition(
       () =>
-        sup.getLogs().includes("Failed to deliver SIGKILL") &&
+        sup.getLogs().includes("KILLFAIL_SIGNAL_ATTEMPT=SIGKILL") &&
+        (sup.getLogs().includes("Failed to deliver SIGKILL") ||
+          sup.getLogs().includes("Termination signal SIGKILL was not accepted")) &&
         sup.getLogs().includes("Failed to confirm termination of PaperForge API process"),
       6_000,
     );
@@ -1014,16 +1590,480 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
     sup.proc.send({ type: "test:force-real-exit" });
     await waitForCondition(
       () =>
+        sup.getLogs().includes(child1ExitMarker) &&
         sup.getLogs().includes("KILLFAIL_SPAWN_2_PID=") &&
         sup.getLogs().includes(REPLACEMENT_READY_LOG),
       8_000,
     );
     expect(isProcessAlive(child1Pid)).toBe(false);
+    processRegistry.retireDescendant(child1Pid);
 
     sup.requestShutdown("SIGTERM");
     const { code } = await sup.waitForExit(5_000);
     expect(code).toBe(0);
   }, 20_000);
+
+  describe("OBS-026 / PF-01.7-R2: OwnedProcessRegistry safe cleanup, unresolved-handle reporting, and failed-assertion fixture teardown", () => {
+    function createSyntheticHandle(options: {
+      pid: number;
+      connected?: boolean;
+      ignoreGraceful?: boolean;
+      refuseSigkill?: boolean;
+      throwOnSigkill?: Error;
+      suppressExitOnSigkill?: boolean;
+      signals: Array<{ pid: number; signal: string }>;
+    }) {
+      const emitter = new EventEmitter();
+      const proc = Object.assign(emitter, {
+        pid: options.pid,
+        exitCode: null as number | null,
+        signalCode: null as NodeJS.Signals | null,
+        connected: options.connected ?? false,
+        send: (msg: unknown) => {
+          options.signals.push({ pid: options.pid, signal: `IPC:${JSON.stringify(msg)}` });
+          if (!options.ignoreGraceful) {
+            proc.exitCode = 0;
+            proc.connected = false;
+            proc.emit("exit", 0, null);
+          }
+          return true;
+        },
+        kill: (sig?: NodeJS.Signals | number) => {
+          const sigLabel = String(sig ?? "SIGTERM");
+          options.signals.push({ pid: options.pid, signal: sigLabel });
+          if (sigLabel === "SIGKILL") {
+            if (options.throwOnSigkill) {
+              throw options.throwOnSigkill;
+            }
+            if (options.refuseSigkill) {
+              return false;
+            }
+            if (options.suppressExitOnSigkill) {
+              return true;
+            }
+          }
+          if (sigLabel === "SIGKILL" || !options.ignoreGraceful) {
+            proc.signalCode = (sigLabel as NodeJS.Signals) || "SIGTERM";
+            proc.connected = false;
+            proc.emit("exit", null, proc.signalCode);
+          }
+          return true;
+        },
+      });
+
+      const waitForExit = (timeoutMs = 1_000) =>
+        new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+          if (proc.exitCode !== null || proc.signalCode !== null) {
+            resolve({ code: proc.exitCode, signal: proc.signalCode });
+            return;
+          }
+          const timer = setTimeout(
+            () => reject(new Error("Synthetic waitForExit timed out")),
+            timeoutMs,
+          );
+          proc.once("exit", (code: number | null, signal: NodeJS.Signals | null) => {
+            clearTimeout(timer);
+            resolve({ code, signal });
+          });
+        });
+
+      return { proc: proc as unknown as ChildProcess, waitForExit };
+    }
+
+    it("never signals explicitly retired descendant PIDs", async () => {
+      const recordedSignals: Array<{ pid: number; signal: string }> = [];
+      const skipped: SkippedUnverifiedCleanup[] = [];
+      const registry = new OwnedProcessRegistry({
+        onSkippedUnverified: (entry) => skipped.push(entry),
+      });
+
+      const retiredHandle = createSyntheticHandle({ pid: 41001, signals: recordedSignals });
+      registry.trackDescendant(41001, "explicitly-retired", undefined, retiredHandle.proc);
+      registry.retireDescendant(41001);
+      expect(registry.isDescendantRetired(41001)).toBe(true);
+
+      const report = await registry.cleanup();
+      expect(recordedSignals).toEqual([]);
+      expect(report.attemptedSignals).toBe(0);
+      expect(report.deliveredSignals).toBe(0);
+      expect(report.refusedOrFailedSignals).toBe(0);
+      expect(report.confirmedExits).toBe(0);
+      expect(report.unresolvedHandles).toEqual([]);
+      expect(report.skippedUnverified).toEqual([]);
+      expect(report.teardownHookErrors).toEqual([]);
+      expect(skipped).toEqual([]);
+    });
+
+    it("retires tracked descendants on clean supervisor exit without stale PID signaling", async () => {
+      const recordedSignals: Array<{ pid: number; signal: string }> = [];
+      const skipped: SkippedUnverifiedCleanup[] = [];
+      const registry = new OwnedProcessRegistry({
+        onSkippedUnverified: (entry) => skipped.push(entry),
+      });
+
+      const supHandle = createSyntheticHandle({ pid: 42000, signals: recordedSignals });
+      const sup: SpawnedSupervisor = {
+        proc: supHandle.proc,
+        getLogs: () => "",
+        requestShutdown: () => {},
+        waitForExit: supHandle.waitForExit,
+      };
+      registry.trackSupervisor(sup);
+      registry.trackDescendant(42001, "clean-exit-child", sup);
+
+      // Simulate clean supervisor exit (code 0)
+      (supHandle.proc as unknown as { exitCode: number | null }).exitCode = 0;
+      supHandle.proc.emit("exit", 0, null);
+      expect(registry.isDescendantRetired(42001)).toBe(true);
+
+      const report = await registry.cleanup();
+      expect(recordedSignals).toEqual([]);
+      expect(report.attemptedSignals).toBe(0);
+      expect(report.deliveredSignals).toBe(0);
+      expect(report.refusedOrFailedSignals).toBe(0);
+      expect(report.confirmedExits).toBe(0);
+      expect(report.unresolvedHandles).toEqual([]);
+      expect(report.skippedUnverified).toEqual([]);
+      expect(skipped).toEqual([]);
+    });
+
+    it("does not signal a recycled numeric PID after abnormal supervisor exit", async () => {
+      const recordedSignals: Array<{ pid: number; signal: string }> = [];
+      const skipped: SkippedUnverifiedCleanup[] = [];
+      const registry = new OwnedProcessRegistry({
+        onSkippedUnverified: (entry) => skipped.push(entry),
+      });
+
+      const supHandle = createSyntheticHandle({ pid: 43000, signals: recordedSignals });
+      const sup: SpawnedSupervisor = {
+        proc: supHandle.proc,
+        getLogs: () => "",
+        requestShutdown: () => {},
+        waitForExit: supHandle.waitForExit,
+      };
+      registry.trackSupervisor(sup);
+      // Use a synthetic recycled PID that happens to exist (e.g. current test runner PID) to
+      // verify cleanup never signals purely on numeric PID existence after abnormal exit.
+      const syntheticRecycledPid = process.pid;
+      registry.trackDescendant(syntheticRecycledPid, "abnormal-exit-recycled-pid", sup);
+
+      // Simulate abnormal supervisor crash (exit code 1)
+      (supHandle.proc as unknown as { exitCode: number | null }).exitCode = 1;
+      supHandle.proc.emit("exit", 1, null);
+      expect(registry.isDescendantRetired(syntheticRecycledPid)).toBe(false);
+
+      const report = await registry.cleanup();
+      expect(recordedSignals).toEqual([]);
+      expect(report.attemptedSignals).toBe(0);
+      expect(report.deliveredSignals).toBe(0);
+      expect(report.refusedOrFailedSignals).toBe(0);
+      expect(report.confirmedExits).toBe(0);
+      expect(report.unresolvedHandles).toEqual([]);
+      expect(report.skippedUnverified).toHaveLength(1);
+      expect(report.skippedUnverified[0]).toMatchObject({
+        pid: syntheticRecycledPid,
+        label: "abnormal-exit-recycled-pid",
+      });
+      expect(report.skippedUnverified[0]?.reason).toContain("exited abnormally");
+      expect(skipped).toHaveLength(1);
+    });
+
+    it("refuses to blindly signal an unverified indirect numeric PID", async () => {
+      const skipped: SkippedUnverifiedCleanup[] = [];
+      const registry = new OwnedProcessRegistry({
+        onSkippedUnverified: (entry) => skipped.push(entry),
+      });
+
+      const syntheticPid = process.pid;
+      registry.trackDescendant(syntheticPid, "unverified-indirect-descendant");
+
+      const report = await registry.cleanup();
+      expect(report.attemptedSignals).toBe(0);
+      expect(report.deliveredSignals).toBe(0);
+      expect(report.refusedOrFailedSignals).toBe(0);
+      expect(report.confirmedExits).toBe(0);
+      expect(report.unresolvedHandles).toEqual([]);
+      expect(report.skippedUnverified).toHaveLength(1);
+      expect(report.skippedUnverified[0]).toMatchObject({
+        pid: syntheticPid,
+        label: "unverified-indirect-descendant",
+      });
+      expect(skipped).toHaveLength(1);
+    });
+
+    it("cleans up genuinely owned live ChildProcess handles and distinguishes cooperative vs escalated exits", async () => {
+      const recordedSignals: Array<{ pid: number; signal: string }> = [];
+      const registry = new OwnedProcessRegistry({
+        childGracefulTimeoutMs: 40,
+        forceKillWaitTimeoutMs: 100,
+      });
+
+      // 1. Live cooperative owned child exits cleanly on graceful IPC shutdown
+      const gracefulHandle = createSyntheticHandle({
+        pid: 44001,
+        connected: true,
+        ignoreGraceful: false,
+        signals: recordedSignals,
+      });
+      registry.trackChild({
+        proc: gracefulHandle.proc,
+        getLogs: () => "",
+        messages: [],
+        waitForExit: gracefulHandle.waitForExit,
+      });
+
+      // 2. Live stuck owned child ignores graceful shutdown -> bounded escalation to SIGKILL via handle
+      const stuckHandle = createSyntheticHandle({
+        pid: 44002,
+        connected: false,
+        ignoreGraceful: true,
+        signals: recordedSignals,
+      });
+      registry.trackChild({
+        proc: stuckHandle.proc,
+        getLogs: () => "",
+        messages: [],
+        waitForExit: stuckHandle.waitForExit,
+      });
+
+      const startMs = Date.now();
+      const report = await registry.cleanup();
+      const elapsedMs = Date.now() - startMs;
+
+      expect(elapsedMs).toBeLessThan(1_000);
+      expect(report.attemptedSignals).toBe(2);
+      expect(report.deliveredSignals).toBe(2);
+      expect(report.refusedOrFailedSignals).toBe(0);
+      expect(report.confirmedExits).toBe(2);
+      expect(report.unresolvedHandles).toEqual([]);
+      expect(report.skippedUnverified).toEqual([]);
+      expect(report.teardownHookErrors).toEqual([]);
+      expect(() => assertCleanupResolved(report)).not.toThrow();
+      expect(recordedSignals).toEqual([
+        { pid: 44002, signal: "SIGTERM" },
+        { pid: 44002, signal: "SIGKILL" },
+        { pid: 44001, signal: 'IPC:{"type":"paperforge:shutdown","signal":"SIGTERM"}' },
+      ]);
+      expect(gracefulHandle.proc.exitCode).toBe(0);
+      expect(stuckHandle.proc.signalCode).toBe("SIGKILL");
+    });
+
+    it("reports refused or failed SIGKILL on an owned real child as unresolved instead of delivered or terminated", async () => {
+      const unresolvedNotifications: UnresolvedOwnedHandle[] = [];
+      const registry = new OwnedProcessRegistry({
+        childGracefulTimeoutMs: 50,
+        forceKillWaitTimeoutMs: 60,
+        onUnresolvedHandle: (entry) => unresolvedNotifications.push(entry),
+      });
+
+      // Spawn a real owned child that ignores IPC shutdown, then inject a refused SIGKILL
+      // (matching the independent audit reproduction) while keeping realKill to clean up safely.
+      const realProc = spawn(
+        process.execPath,
+        ["--input-type=module", "-e", "setInterval(() => {}, 10_000);"],
+        { stdio: ["ignore", "pipe", "pipe", "ipc"] },
+      );
+      const realChild = trackSpawnedChild(realProc);
+      const realKill = realProc.kill.bind(realProc);
+      const realPid = realProc.pid;
+      expect(realPid).toBeTypeOf("number");
+
+      try {
+        // Inject refused SIGKILL on the real owned handle
+        realProc.kill = ((sig?: NodeJS.Signals | number) => {
+          if (sig === "SIGKILL") {
+            return false;
+          }
+          return false;
+        }) as ChildProcess["kill"];
+
+        registry.trackChild(realChild);
+
+        const startMs = Date.now();
+        const report = await registry.cleanup();
+        const elapsedMs = Date.now() - startMs;
+
+        expect(elapsedMs).toBeLessThan(2_000);
+        expect(report.attemptedSignals).toBe(1);
+        expect(report.deliveredSignals).toBe(0);
+        expect(report.refusedOrFailedSignals).toBe(1);
+        expect(report.confirmedExits).toBe(0);
+        expect(report.skippedUnverified).toEqual([]);
+        expect(report.unresolvedHandles).toHaveLength(1);
+        expect(unresolvedNotifications).toHaveLength(1);
+        expect(registry.getUnresolvedHandles()).toHaveLength(1);
+
+        const unresolved = report.unresolvedHandles[0];
+        expect(unresolved?.kind).toBe("child");
+        expect(unresolved?.pid).toBe(realPid);
+        expect(unresolved?.handle).toBe(realProc);
+        expect(unresolved?.reason).toContain('kill("SIGKILL") returned false');
+        expect(unresolved?.waitError).toContain("did not exit within 60ms");
+        expect(unresolved?.attempts).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ method: "signal", signal: "SIGKILL", outcome: "refused" }),
+          ]),
+        );
+        expect(isProcessAlive(realPid as number)).toBe(true);
+        expect(() => assertCleanupResolved(report)).toThrow(/unresolved owned handle/i);
+      } finally {
+        realProc.kill = realKill;
+        if (realProc.exitCode === null && realProc.signalCode === null) {
+          realKill("SIGKILL");
+          await realChild.waitForExit(5_000);
+        }
+      }
+
+      // After restoring realKill and confirming real exit, a subsequent cleanup clears ownership cleanly.
+      const followUpReport = await registry.cleanup();
+      expect(followUpReport.unresolvedHandles).toEqual([]);
+      expect(registry.getUnresolvedHandles()).toEqual([]);
+      expect(isProcessAlive(realPid as number)).toBe(false);
+    }, 15_000);
+
+    it("distinguishes attempted, delivered, refused/errored signals and never treats signal delivery as confirmed exit", async () => {
+      const recordedSignals: Array<{ pid: number; signal: string }> = [];
+      const unresolvedNotifications: UnresolvedOwnedHandle[] = [];
+      const registry = new OwnedProcessRegistry({
+        childGracefulTimeoutMs: 30,
+        forceKillWaitTimeoutMs: 40,
+        onUnresolvedHandle: (entry) => unresolvedNotifications.push(entry),
+      });
+
+      // 1. Owned child where kill("SIGKILL") throws EPERM -> attempted, 0 delivered, error recorded, unresolved
+      const errorChild = createSyntheticHandle({
+        pid: 45001,
+        connected: true,
+        ignoreGraceful: true,
+        throwOnSigkill: Object.assign(new Error("kill EPERM"), { code: "EPERM" }),
+        signals: recordedSignals,
+      });
+      registry.trackChild({
+        proc: errorChild.proc,
+        getLogs: () => "",
+        messages: [],
+        waitForExit: errorChild.waitForExit,
+      });
+
+      // 2. Owned child where kill("SIGKILL") returns true (delivered), yet child remains live without exiting
+      const deliveredButLiveChild = createSyntheticHandle({
+        pid: 45002,
+        connected: true,
+        ignoreGraceful: true,
+        suppressExitOnSigkill: true,
+        signals: recordedSignals,
+      });
+      registry.trackChild({
+        proc: deliveredButLiveChild.proc,
+        getLogs: () => "",
+        messages: [],
+        waitForExit: deliveredButLiveChild.waitForExit,
+      });
+
+      // 3. Handle-backed descendant whose SIGKILL is refused -> remains unretired and unresolved
+      const refusedDescendant = createSyntheticHandle({
+        pid: 45003,
+        connected: false,
+        ignoreGraceful: true,
+        refuseSigkill: true,
+        signals: recordedSignals,
+      });
+      registry.trackDescendant(
+        45003,
+        "refused-handle-descendant",
+        undefined,
+        refusedDescendant.proc,
+      );
+
+      const report = await registry.cleanup();
+
+      // 3 SIGKILL attempts total: 1 delivered (#45002), 2 refused/errored (#45001 EPERM + #45003 false), 0 confirmed exits
+      expect(report.attemptedSignals).toBe(3);
+      expect(report.deliveredSignals).toBe(1);
+      expect(report.refusedOrFailedSignals).toBe(2);
+      expect(report.confirmedExits).toBe(0);
+      expect(report.unresolvedHandles).toHaveLength(3);
+      expect(unresolvedNotifications).toHaveLength(3);
+      expect(registry.isDescendantRetired(45003)).toBe(false);
+
+      const errorEntry = report.unresolvedHandles.find((entry) => entry.pid === 45001);
+      expect(errorEntry?.reason).toContain("kill EPERM");
+      expect(errorEntry?.attempts).toContainEqual(
+        expect.objectContaining({
+          method: "signal",
+          signal: "SIGKILL",
+          outcome: "error",
+          errorMessage: "kill EPERM",
+        }),
+      );
+
+      const deliveredEntry = report.unresolvedHandles.find((entry) => entry.pid === 45002);
+      expect(deliveredEntry?.reason).toContain("signal delivery does not prove termination");
+      expect(deliveredEntry?.waitError).toContain("timed out");
+      expect(deliveredEntry?.attempts).toContainEqual(
+        expect.objectContaining({ method: "signal", signal: "SIGKILL", outcome: "delivered" }),
+      );
+
+      const descendantEntry = report.unresolvedHandles.find((entry) => entry.pid === 45003);
+      expect(descendantEntry?.kind).toBe("descendant");
+      expect(descendantEntry?.label).toBe("refused-handle-descendant");
+      expect(descendantEntry?.handle).toBe(refusedDescendant.proc);
+      expect(descendantEntry?.reason).toContain('kill("SIGKILL") returned false');
+
+      expect(() => assertCleanupResolved(report)).toThrow(
+        /Test cleanup left 3 unresolved owned handle\(s\)/,
+      );
+    });
+
+    it("tears down the deliberately blocked KILLFAIL real child cleanly when an assertion fails before manual release", async () => {
+      const fixtureRegistry = new OwnedProcessRegistry();
+      const { entryFile, sup, child1Pid, child1ExitMarker } = await startKillFailFixture(
+        fixtureRegistry,
+        "pf-r3-kill-fail-abort-",
+      );
+
+      // Reach the deliberate signal-refusal state where real child #1 is alive and blocked.
+      writeFileSync(entryFile, makeWorkingEntry("KILLFAIL_V2"), "utf8");
+      await waitForCondition(
+        () =>
+          sup.getLogs().includes("KILLFAIL_SIGNAL_ATTEMPT=SIGKILL") &&
+          sup.getLogs().includes("Failed to confirm termination of PaperForge API process"),
+        6_000,
+      );
+      expect(isProcessAlive(child1Pid)).toBe(true);
+      expect(sup.getLogs()).not.toContain(child1ExitMarker);
+      expect(sup.getLogs()).not.toContain("KILLFAIL_SPAWN_2_PID=");
+
+      // Simulate a failing test assertion BEFORE manual `test:force-real-exit` is ever reached.
+      let caughtAssertionError: unknown;
+      let cleanupReport: CleanupReport | undefined;
+      try {
+        expect(sup.getLogs()).toContain("KILLFAIL_SPAWN_2_PID=");
+      } catch (error) {
+        caughtAssertionError = error;
+      } finally {
+        cleanupReport = await fixtureRegistry.cleanup();
+      }
+
+      expect(caughtAssertionError).toBeDefined();
+      expect(cleanupReport).toBeDefined();
+      expect(cleanupReport?.unresolvedHandles).toEqual([]);
+      expect(cleanupReport?.teardownHookErrors).toEqual([]);
+      expect(cleanupReport?.skippedUnverified).toEqual([]);
+      expect(() => assertCleanupResolved(cleanupReport as CleanupReport)).not.toThrow();
+
+      // Confirm the deliberately blocked real child actually exited and supervisor shut down cleanly
+      // through its own exit path (exitCode 1 reflects forced child SIGKILL during shutdown, with no
+      // SIGKILL escalation needed against the supervisor handle itself).
+      expect(sup.getLogs()).toContain(`KILLFAIL_RELEASING_1_PID=${child1Pid}`);
+      expect(sup.getLogs()).toContain(child1ExitMarker);
+      expect(isProcessAlive(child1Pid)).toBe(false);
+      expect(sup.proc.exitCode).toBe(1);
+      expect(sup.proc.signalCode).toBeNull();
+      expect(cleanupReport?.attemptedSignals).toBe(0);
+      expect(sup.getLogs()).not.toContain("KILLFAIL_SPAWN_2_PID=");
+    }, 20_000);
+  });
 
   it("R3: shuts down real PaperForge backend cleanly through idempotent shutdown path on async and sync readiness-send errors", async () => {
     // 1. Asynchronous readiness-send failure via completion callback
@@ -1065,7 +2105,7 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
       },
     );
     const asyncChild = trackSpawnedChild(asyncProc);
-    activeChildren.push(asyncChild);
+    trackChild(asyncChild);
 
     const asyncExit = await asyncChild.waitForExit(8_000);
     expect(asyncExit.code).toBe(0);
@@ -1105,7 +2145,7 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
       },
     );
     const syncChild = trackSpawnedChild(syncProc);
-    activeChildren.push(syncChild);
+    trackChild(syncChild);
 
     const syncExit = await syncChild.waitForExit(8_000);
     expect(syncExit.code).toBe(0);
@@ -1132,7 +2172,7 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
       },
     });
     const child = trackSpawnedChild(proc);
-    activeChildren.push(child);
+    trackChild(child);
 
     // 1-2. Wait for actual paperforge:ready IPC message from PaperForge backend
     await waitForCondition(
@@ -1206,7 +2246,7 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
       },
     );
     const child = trackSpawnedChild(proc);
-    activeChildren.push(child);
+    trackChild(child);
 
     await waitForCondition(
       () =>
@@ -1262,7 +2302,7 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
       },
     );
     const child = trackSpawnedChild(proc);
-    activeChildren.push(child);
+    trackChild(child);
 
     await waitForCondition(
       () =>
@@ -1305,7 +2345,7 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
       },
     });
     const child = trackSpawnedChild(proc);
-    activeChildren.push(child);
+    trackChild(child);
 
     await waitForCondition(
       () =>
@@ -1343,7 +2383,7 @@ describe("F-02 / R1-01 / R1-02 / R3: Backend dev supervisor and supervised backe
       },
     });
     const child = trackSpawnedChild(proc);
-    activeChildren.push(child);
+    trackChild(child);
 
     await waitForCondition(
       () => child.getLogs().includes(`listening on http://127.0.0.1:${port}`),

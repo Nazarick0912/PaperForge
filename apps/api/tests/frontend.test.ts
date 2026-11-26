@@ -432,6 +432,89 @@ describe("Compiled frontend static serving, containment, and SPA fallback", () =
       ],
       ["explicit text/*;q=0 overrides */*;q=1", "text/*;q=0, */*;q=1", false],
       ["image/png only", "image/png", false],
+      // OBS-024: parameter-constrained media ranges against served `text/html; charset=utf-8`
+      [
+        "non-matching media parameter exclusion does not override */*;q=1",
+        "text/html;level=3;q=0, */*;q=1",
+        true,
+      ],
+      ["non-matching media parameter alone does not match", "text/html;level=3", false],
+      [
+        "non-matching charset exclusion before q does not override */*;q=1",
+        "text/html;charset=iso-8859-1;q=0, */*;q=1",
+        true,
+      ],
+      [
+        "non-matching charset exclusion after q does not override */*;q=1 (RFC 9110)",
+        "text/html;q=0;charset=iso-8859-1, */*;q=1",
+        true,
+      ],
+      [
+        "matching charset=utf-8 exclusion before q overrides */*;q=1",
+        "text/html;charset=utf-8;q=0, */*;q=1",
+        false,
+      ],
+      [
+        "matching charset=utf-8 exclusion after q overrides */*;q=1 (RFC 9110)",
+        "text/html;q=0;charset=utf-8, */*;q=1",
+        false,
+      ],
+      [
+        "matching quoted charset exclusion before q overrides bare text/html;q=1",
+        'text/html;charset="UTF-8";q=0, text/html;q=1',
+        false,
+      ],
+      [
+        "matching quoted charset exclusion after q overrides bare text/html;q=1",
+        'text/html;q=0;charset="UTF-8", text/html;q=1',
+        false,
+      ],
+      [
+        "matching charset allowance before q overrides bare text/html;q=0",
+        "text/html;charset=utf-8;q=0.5, text/html;q=0",
+        true,
+      ],
+      [
+        "matching charset allowance after q overrides bare text/html;q=0",
+        "text/html;q=0.5;charset=utf-8, text/html;q=0",
+        true,
+      ],
+      [
+        "non-matching parameter after q does not override */*;q=1 (no obsolete accept-ext)",
+        'text/html;q=0;ext="a;b", */*;q=1',
+        true,
+      ],
+      [
+        "non-matching level parameter after q does not override */*;q=1",
+        "text/html;q=0;level=3, */*;q=1",
+        true,
+      ],
+      [
+        "quoted non-matching media parameter containing semicolon does not override */*;q=1",
+        'text/html;level="3;q=0", */*;q=1',
+        true,
+      ],
+      [
+        "duplicate q parameter makes range malformed and ignored while wildcard matches",
+        "text/html;q=0;q=1, */*;q=1",
+        true,
+      ],
+      ["duplicate q parameter alone is rejected as malformed", "text/html;q=0.5;q=0.8", false],
+      [
+        "malformed parameter without value is ignored while valid wildcard matches",
+        "text/html;badparam, */*;q=1",
+        true,
+      ],
+      [
+        "malformed quality value is ignored while valid wildcard matches",
+        "text/html;q=1.5, */*;q=1",
+        true,
+      ],
+      [
+        "unterminated quoted parameter rejects unclosed range",
+        'text/html;charset="unterminated, */*;q=1',
+        false,
+      ],
     ])("acceptsHtmlNavigation(%s: %j) === %s", (_label, acceptHeader, expected) => {
       expect(acceptsHtmlNavigation(acceptHeader)).toBe(expected);
     });
@@ -445,6 +528,14 @@ describe("Compiled frontend static serving, containment, and SPA fallback", () =
       ["text/html;q=0.", 404],
       ["text/html;q=0., */*;q=1", 404],
       ["text/*;q=0, */*;q=1", 404],
+      ["text/html;level=3;q=0, */*;q=1", 200],
+      ["text/html;charset=iso-8859-1;q=0, */*;q=1", 200],
+      ["text/html;q=0;charset=iso-8859-1, */*;q=1", 200],
+      ["text/html;charset=utf-8;q=0, */*;q=1", 404],
+      ["text/html;q=0;charset=utf-8, */*;q=1", 404],
+      ['text/html;q=0;charset="UTF-8", */*;q=1', 404],
+      ["text/html;charset=utf-8;q=0.5, text/html;q=0", 200],
+      ["text/html;q=0.5;charset=utf-8, text/html;q=0", 200],
     ])(
       "SPA fallback for GET /exam with Accept: %s returns HTTP %d",
       async (accept, expectedStatus) => {
@@ -625,7 +716,6 @@ describe("Compiled frontend static serving, containment, and SPA fallback", () =
   describe("F-01: Conditional real OS symlink/junction probe (only when host permits)", () => {
     it("blocks an actual OS junction/symlink escaping dist when host permits creating links", async () => {
       const junctionPath = path.join(fixtureDistDir, "os-junction-escape");
-      let createdRealLink = false;
 
       try {
         symlinkSync(
@@ -633,7 +723,6 @@ describe("Compiled frontend static serving, containment, and SPA fallback", () =
           junctionPath,
           process.platform === "win32" ? "junction" : "dir",
         );
-        createdRealLink = true;
       } catch (error) {
         const code =
           typeof error === "object" && error !== null && "code" in error ? error.code : null;
@@ -645,7 +734,6 @@ describe("Compiled frontend static serving, containment, and SPA fallback", () =
         throw error;
       }
 
-      expect(createdRealLink).toBe(true);
       const app = createApp(makeProductionConfig(), { frontendDistDir: fixtureDistDir });
       const response = await app.request("/os-junction-escape/leak.txt");
       const rawText = await response.text();

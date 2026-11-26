@@ -27,6 +27,35 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+function expectExclusiveActiveNavLink(navElement: HTMLElement, expectedLabel: string | null) {
+  const links = Array.from(navElement.querySelectorAll("a"));
+  expect(links.length).toBeGreaterThan(0);
+
+  const activeLinks = links.filter((link) => link.getAttribute("aria-current") === "page");
+  if (expectedLabel === null) {
+    expect(activeLinks).toHaveLength(0);
+    for (const link of links) {
+      expect(link).not.toHaveAttribute("aria-current");
+    }
+    return;
+  }
+
+  expect(activeLinks).toHaveLength(1);
+  expect(activeLinks[0]).toHaveTextContent(expectedLabel);
+  for (const link of links) {
+    if (link !== activeLinks[0]) {
+      expect(link).not.toHaveAttribute("aria-current");
+    }
+  }
+}
+
+function getNavigationRegions() {
+  const primaryNav = screen.getByRole("navigation", { name: "Primary navigation" });
+  const mobileNav = document.getElementById("mobile-navigation");
+  expect(mobileNav).not.toBeNull();
+  return { primaryNav, mobileNav: mobileNav as HTMLElement };
+}
+
 describe("Application navigation and routing", () => {
   it("renders the dashboard heading, live backend status, no duplicate pending shell copy, and all four module links", async () => {
     renderApp(["/"]);
@@ -95,26 +124,60 @@ describe("Application navigation and routing", () => {
         expect(screen.getByRole("status")).toHaveTextContent("Backend connected");
       });
 
-      const primaryNav = screen.getByRole("navigation", { name: "Primary navigation" });
-      const dashboardLink = within(primaryNav).getByRole("link", { name: "Dashboard" });
-      expect(dashboardLink).toHaveAttribute("aria-current", "page");
+      const { primaryNav, mobileNav } = getNavigationRegions();
+      expectExclusiveActiveNavLink(primaryNav, "Dashboard");
+      expectExclusiveActiveNavLink(mobileNav, "Dashboard");
 
       const targetLink = within(primaryNav).getByRole("link", { name: navLabel });
       fireEvent.click(targetLink);
 
       expect(screen.getByRole("heading", { level: 1, name: heading })).toBeInTheDocument();
       expect(within(screen.getByRole("list")).getByText(plannedSnippet)).toBeInTheDocument();
-      expect(targetLink).toHaveAttribute("aria-current", "page");
-      expect(dashboardLink).not.toHaveAttribute("aria-current");
+      expectExclusiveActiveNavLink(primaryNav, navLabel);
+      expectExclusiveActiveNavLink(mobileNav, navLabel);
       expect(screen.getByRole("link", { name: /back to dashboard/i })).toHaveAttribute("href", "/");
       expect(targetLink).toHaveAttribute("href", path);
     },
   );
 
+  it("OBS-008: updates active state exclusively across module-to-module transitions in both desktop and mobile navigation", async () => {
+    renderApp(["/exam"]);
+
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Exam Question Paper Generator" }),
+    ).toBeInTheDocument();
+
+    const { primaryNav, mobileNav } = getNavigationRegions();
+    expectExclusiveActiveNavLink(primaryNav, "Exam Generator");
+    expectExclusiveActiveNavLink(mobileNav, "Exam Generator");
+
+    const transitions = [
+      { label: "Quiz Generator", heading: "Interactive Source-Based Quiz Generator" },
+      { label: "Assessment Editor", heading: "Unified Assessment Editor" },
+      { label: "Slide Generator", heading: "Modular Slide Deck Generator" },
+      { label: "Dashboard", heading: "Create learning materials" },
+    ] as const;
+
+    for (const step of transitions) {
+      fireEvent.click(within(primaryNav).getByRole("link", { name: step.label }));
+      expect(screen.getByRole("heading", { level: 1, name: step.heading })).toBeInTheDocument();
+      expectExclusiveActiveNavLink(primaryNav, step.label);
+      expectExclusiveActiveNavLink(mobileNav, step.label);
+    }
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent("Backend connected");
+    });
+  });
+
   it("displays the Not Found page for unknown routes and recovers to the dashboard", async () => {
     renderApp(["/non-existent-module"]);
 
     expect(screen.getByRole("heading", { level: 1, name: "Page not found" })).toBeInTheDocument();
+
+    const { primaryNav, mobileNav } = getNavigationRegions();
+    expectExclusiveActiveNavLink(primaryNav, null);
+    expectExclusiveActiveNavLink(mobileNav, null);
 
     const recoveryLink = screen.getByRole("link", { name: /return to dashboard/i });
     expect(recoveryLink).toHaveAttribute("href", "/");
@@ -128,11 +191,8 @@ describe("Application navigation and routing", () => {
       expect(screen.getByRole("status")).toHaveTextContent("Backend connected");
     });
 
-    const primaryNav = screen.getByRole("navigation", { name: "Primary navigation" });
-    expect(within(primaryNav).getByRole("link", { name: "Dashboard" })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
+    expectExclusiveActiveNavLink(primaryNav, "Dashboard");
+    expectExclusiveActiveNavLink(mobileNav, "Dashboard");
   });
 
   it("keeps mobile navigation mounted when collapsed, prevents focus on hidden links, and moves focus to main content on selection", async () => {
@@ -180,6 +240,14 @@ describe("Application navigation and routing", () => {
     ).toBeInTheDocument();
     expect(toggleButton).toHaveAttribute("aria-expanded", "false");
     expect(document.getElementById("mobile-navigation")).toHaveAttribute("hidden");
+    expectExclusiveActiveNavLink(
+      screen.getByRole("navigation", { name: "Primary navigation" }),
+      "Slide Generator",
+    );
+    expectExclusiveActiveNavLink(
+      document.getElementById("mobile-navigation") as HTMLElement,
+      "Slide Generator",
+    );
 
     const mainContent = screen.getByRole("main");
     expect(mainContent).toHaveAttribute("id", "main-content");

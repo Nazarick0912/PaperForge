@@ -7,6 +7,7 @@ import { HTTPException } from "hono/http-exception";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import type { AppEnv } from "../src/config/env.js";
+import { isValidHttpDate } from "../src/middleware/errors.js";
 
 function makeConfig(overrides: Partial<AppEnv> = {}): AppEnv {
   return {
@@ -470,6 +471,85 @@ describe("PaperForge API application", () => {
       const isoTsRes = await app.request("/api/v1/__test_retry_iso_timestamp");
       expect(isoTsRes.status).toBe(429);
       expect(isoTsRes.headers.get("retry-after")).toBeNull();
+    });
+
+    it("OBS-023: applies RFC 9110 §5.6.7 rolling 50-year interpretation to RFC 850 dates", async () => {
+      const referenceNov2026 = new Date("2026-11-26T00:00:00Z");
+
+      // Valid future date in Jan 2070 (43.1 years ahead -> 2070, Wednesday)
+      expect(isValidHttpDate("Wednesday, 01-Jan-70 00:00:00 GMT", referenceNov2026)).toBe(true);
+      // 1970-01-01 was Thursday — must be rejected because 2070 is <= 50 years ahead
+      expect(isValidHttpDate("Thursday, 01-Jan-70 00:00:00 GMT", referenceNov2026)).toBe(false);
+
+      // Exact 50-year boundary (2076-11-26 00:00:00 GMT is Thursday -> remains 2076)
+      expect(isValidHttpDate("Thursday, 26-Nov-76 00:00:00 GMT", referenceNov2026)).toBe(true);
+      expect(isValidHttpDate("Friday, 26-Nov-76 00:00:00 GMT", referenceNov2026)).toBe(false);
+
+      // 1 second beyond 50-year boundary -> past-century 1976-11-26 (Friday)
+      expect(isValidHttpDate("Friday, 26-Nov-76 00:00:01 GMT", referenceNov2026)).toBe(true);
+      expect(isValidHttpDate("Thursday, 26-Nov-76 00:00:01 GMT", referenceNov2026)).toBe(false);
+
+      // 1 day beyond 50-year boundary -> past-century 1976-11-27 (Saturday)
+      expect(isValidHttpDate("Saturday, 27-Nov-76 00:00:00 GMT", referenceNov2026)).toBe(true);
+
+      // >50 years ahead -> past-century 1977-01-01 (Saturday)
+      expect(isValidHttpDate("Saturday, 01-Jan-77 00:00:00 GMT", referenceNov2026)).toBe(true);
+
+      // Calendar validity: leap day 2076-02-29 (Saturday) valid, non-leap 1977-02-29 invalid
+      expect(isValidHttpDate("Saturday, 29-Feb-76 00:00:00 GMT", referenceNov2026)).toBe(true);
+      expect(isValidHttpDate("Tuesday, 29-Feb-77 00:00:00 GMT", referenceNov2026)).toBe(false);
+
+      // Existing IMF-fixdate and asctime handling remain intact
+      expect(isValidHttpDate("Wed, 21 Oct 2026 07:28:00 GMT", referenceNov2026)).toBe(true);
+      expect(isValidHttpDate("Wed Oct 21 07:28:00 2026", referenceNov2026)).toBe(true);
+
+      // End-to-end Retry-After preservation with deterministic fake clock set to Nov 2026
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(referenceNov2026);
+        const app = createApp(makeConfig({ NODE_ENV: "test" }));
+
+        app.get("/api/v1/__test_rfc850_2070", () => {
+          throw new HTTPException(429, {
+            res: new Response(null, {
+              status: 429,
+              headers: { "Retry-After": "Wednesday, 01-Jan-70 00:00:00 GMT" },
+            }),
+          });
+        });
+
+        app.get("/api/v1/__test_rfc850_past_boundary", () => {
+          throw new HTTPException(429, {
+            res: new Response(null, {
+              status: 429,
+              headers: { "Retry-After": "Friday, 26-Nov-76 00:00:01 GMT" },
+            }),
+          });
+        });
+
+        app.get("/api/v1/__test_rfc850_wrong_weekday", () => {
+          throw new HTTPException(429, {
+            res: new Response(null, {
+              status: 429,
+              headers: { "Retry-After": "Thursday, 01-Jan-70 00:00:00 GMT" },
+            }),
+          });
+        });
+
+        const valid2070 = await app.request("/api/v1/__test_rfc850_2070");
+        expect(valid2070.status).toBe(429);
+        expect(valid2070.headers.get("retry-after")).toBe("Wednesday, 01-Jan-70 00:00:00 GMT");
+
+        const validPastBoundary = await app.request("/api/v1/__test_rfc850_past_boundary");
+        expect(validPastBoundary.status).toBe(429);
+        expect(validPastBoundary.headers.get("retry-after")).toBe("Friday, 26-Nov-76 00:00:01 GMT");
+
+        const wrongWeekday = await app.request("/api/v1/__test_rfc850_wrong_weekday");
+        expect(wrongWeekday.status).toBe(429);
+        expect(wrongWeekday.headers.get("retry-after")).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("handles ordinary, extension-method, empty, and malformed Allow headers on HTTP 405", async () => {

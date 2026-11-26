@@ -5,8 +5,17 @@ import { ApiClientError } from "./errors";
 export const DEFAULT_API_TIMEOUT_MS = 5_000;
 
 const INTERNAL_SAME_ORIGIN_BASE = "http://paperforge.local";
-const CONTROL_CHAR_PATTERN = /[\u0000-\u001f\u007f]/;
 const FORBIDDEN_ENCODED_PATH_PATTERN = /%(?:2e|2f|5c|00)/i;
+
+function hasControlChar(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x1f || code === 0x7f) {
+      return true;
+    }
+  }
+  return false;
+}
 
 export interface ResponseSchema<T> {
   safeParse(data: unknown): { success: true; data: T } | { success: false };
@@ -41,7 +50,7 @@ export function normalizeApiRequestPath(rawPath: string): string {
     rawPath.startsWith("//") ||
     rawPath.includes("\\") ||
     rawPath.includes("#") ||
-    CONTROL_CHAR_PATTERN.test(rawPath)
+    hasControlChar(rawPath)
   ) {
     throw new TypeError(
       `API client requests must use a safe relative /api URL (received "${rawPath}").`,
@@ -169,6 +178,16 @@ export async function apiRequest<T>(options: ApiRequestOptions<T>): Promise<T> {
       headers.set("Content-Type", "application/json");
     }
     serializedBody = JSON.stringify(body);
+  }
+
+  // Re-check after synchronous request preparation (e.g., custom toJSON() or header iterators)
+  // in case the caller's signal was aborted before listeners/timers are registered.
+  if (signal?.aborted) {
+    throw new ApiClientError({
+      kind: "aborted",
+      message: "The request was cancelled.",
+      cause: signal.reason,
+    });
   }
 
   const controller = new AbortController();

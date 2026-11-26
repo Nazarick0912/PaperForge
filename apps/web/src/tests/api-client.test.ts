@@ -536,14 +536,65 @@ describe("Frontend API client", () => {
 
   it("immediately reports aborted when caller AbortSignal is already aborted", async () => {
     const controller = new AbortController();
-    controller.abort();
+    controller.abort("pre-aborted");
 
+    const addSpy = vi.spyOn(controller.signal, "addEventListener");
+    const toJSON = vi.fn(() => ({ message: "should-not-serialize" }));
     const fetcher = vi.fn<typeof fetch>();
 
-    await expect(getHealth({ fetcher, signal: controller.signal })).rejects.toMatchObject({
+    await expect(
+      apiRequest({
+        path: "/api/v1/dev/echo",
+        method: "POST",
+        body: { toJSON },
+        schema: EchoResponseSchema,
+        fetcher,
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({
       name: "ApiClientError",
       kind: "aborted",
+      cause: "pre-aborted",
     });
+
+    expect(toJSON).not.toHaveBeenCalled();
     expect(fetcher).not.toHaveBeenCalled();
+    expect(addSpy).not.toHaveBeenCalled();
+  });
+
+  it("OBS-022: prevents fetch and cleans up resources if caller AbortSignal aborts during synchronous request preparation", async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const addSpy = vi.spyOn(controller.signal, "addEventListener");
+    const removeSpy = vi.spyOn(controller.signal, "removeEventListener");
+    const fetcher = vi.fn<typeof fetch>();
+
+    const abortingBody = {
+      toJSON() {
+        controller.abort("aborted-in-toJSON");
+        return { message: "Hello PaperForge" };
+      },
+    };
+
+    await expect(
+      apiRequest({
+        path: "/api/v1/dev/echo",
+        method: "POST",
+        body: abortingBody,
+        schema: EchoResponseSchema,
+        fetcher,
+        signal: controller.signal,
+        timeoutMs: 5_000,
+      }),
+    ).rejects.toMatchObject({
+      name: "ApiClientError",
+      kind: "aborted",
+      cause: "aborted-in-toJSON",
+    });
+
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(addSpy).not.toHaveBeenCalled();
+    expect(removeSpy).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

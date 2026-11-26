@@ -9,22 +9,23 @@ PaperForge is an AI-assisted educational authoring platform for a four-member CA
 3. **Module 3 — Unified Assessment Editor & Export Engine**: Edit exam and quiz drafts with mathematical expressions, inspect A4 print preview, preserve answer/rubric data, and export PDF and Moodle XML. ([Specification](./docs/modules/03-assessment-editor.md))
 4. **Module 4 — Modular Slide Deck Generator**: Generate structured teaching slide outlines and decks, preview presentations, selectively regenerate slides/sections of PaperForge decks, and export PPTX. ([Specification](./docs/modules/04-slide-generator.md))
 
-## Current Implementation Status (PF-01.6)
+## Current Implementation Status (PF-01.7 — Pending Review)
 
-The repository currently provides the **integrated application foundation (PF-01.5)** plus **architecture, requirements, and team onboarding documentation (PF-01.6)**.
+The repository currently provides the **integrated application foundation (PF-01.5)**, **architecture and onboarding documentation (PF-01.6, committed at `3cebeaa`)**, and **automated linting, quality gates, and CI configuration (PF-01.7, implemented locally and pending independent review)**.
 
 - **Implemented**:
   - Frontend application shell, dashboard, accessible mobile navigation, shared UI/feedback primitives, and four module placeholder routes (`/exam`, `/quiz`, `/editor`, `/slides`).
-  - Browser-native `fetch` API client (`apps/web/src/lib/api/`) with strict same-origin `/api` path validation, `redirect: "error"`, runtime Zod validation, and live dashboard health status (`GET /api/v1/health`) with manual retry.
-  - Hono backend HTTP foundation (`apps/api`) with Zod environment validation, loopback-only binding (`127.0.0.1`), `GET /api/v1/health`, dev/test-only `POST /api/v1/dev/echo`, centralized structured JSON errors, dev supervision (`apps/api/scripts/dev.mjs`), and compiled integrated SPA serving with physical build-root containment. _(Automated foundation tests pass; final native Windows shutdown, real-browser regression, and remaining platform-specific filesystem-link verification are pending PF-01.7/PF-01.8.)_
+  - Browser-native `fetch` API client (`apps/web/src/lib/api/`) with strict same-origin `/api` path validation, `redirect: "error"`, synchronous-preparation abort handling, runtime Zod validation, and live dashboard health status (`GET /api/v1/health`) with manual retry.
+  - Hono backend HTTP foundation (`apps/api`) with Zod environment validation, loopback-only binding (`127.0.0.1`), `GET /api/v1/health`, dev/test-only `POST /api/v1/dev/echo`, centralized structured JSON errors (including RFC 9110 rolling-window RFC 850 dates), dev supervision (`apps/api/scripts/dev.mjs`), and compiled integrated SPA serving with physical build-root containment and parameter-aware RFC 9110 `Accept` negotiation. _(Automated foundation tests pass; hosted Linux/Windows CI execution is pending commit and push, and final native Windows shutdown, real-browser regression, and remaining platform-specific filesystem-link verification are pending PF-01.8.)_
   - Compiled `@paperforge/shared` infrastructure contracts (`HealthResponse`, `EchoRequest`/`EchoResponse`, `ApiErrorCode`/`ApiErrorResponse`).
-  - 301 automated Vitest foundation tests across 10 files (60 shared, 180 API, 61 web).
+  - Root ESLint flat configuration (`eslint.config.mjs`) with workspace/module import boundary enforcement, solution-style TypeScript editor discovery (`tsconfig.json`, `apps/web/tsconfig.json`), unified `pnpm check` quality gate, and GitHub Actions CI workflow (`.github/workflows/ci.yml`, `ubuntu-latest` + `windows-latest`, hosted execution pending commit/push).
+  - 338 automated Vitest foundation tests across 10 files (60 shared, 215 API, 63 web).
 - **Not yet implemented**:
-  - Educational authoring workflows for Modules 1–4, educational domain schemas (`SourceDocument`, exam/quiz/assessment/slide schemas), document ingestion (`PDF`/`DOCX`/`PPTX`), OCR, SQLite persistence and `.data/` file workflows, AI provider integration (mock or Gemini), upload processing, authentication, final export engines (PDF, Moodle XML, DOCX, PPTX), and ESLint / `pnpm check` / CI (PF-01.7).
+  - Educational authoring workflows for Modules 1–4, educational domain schemas (`SourceDocument`, exam/quiz/assessment/slide schemas), document ingestion (`PDF`/`DOCX`/`PPTX`), OCR, SQLite persistence and `.data/` file workflows, AI provider integration (mock or Gemini), upload processing, authentication, and final export engines (PDF, Moodle XML, DOCX, PPTX).
 
 ## Technology Stack
 
-- **Runtime & Tooling**: Node.js 24 LTS (`>=24.22.3 <25`, reference `24.22.3`), `pnpm` `11.29.0` (single root lockfile, `allowBuilds: { esbuild: false }`), strict TypeScript (`6.0.3`), ESM (`"type": "module"`), Vitest (`5.1.1`), Prettier (`3.10.1`; ESLint + CI pending PF-01.7).
+- **Runtime & Tooling**: Node.js 24 LTS (`>=24.22.3 <25`, reference `24.22.3`), `pnpm` `11.29.0` (single root lockfile, `allowBuilds: { esbuild: false }`), strict TypeScript (`6.0.3`), ESM (`"type": "module"`), Vitest (`5.1.1`), Prettier (`3.10.1`), ESLint (`10.15.0` with `@eslint/js` `10.0.1`, `typescript-eslint` `8.74.0`, `globals` `17.14.0`, `eslint-plugin-react-hooks` `7.1.1`), and GitHub Actions CI (`.github/workflows/ci.yml`).
 - **Frontend (`@paperforge/web`)**: React (`19.3.1`), Vite (`8.3.8`), React Router (`8.5.2`, Declarative Mode), Tailwind CSS v4 (`4.3.5`), Lucide React (`1.78.0`), native React state, browser-native `fetch`.
 - **Backend (`@paperforge/api`)**: Hono (`4.13.22`), `@hono/node-server` (`2.1.11`), Zod (`4.6.7`), `tsx` (`4.23.15`).
 - **Shared Contracts (`@paperforge/shared`)**: Compiled Zod schemas and inferred TypeScript types exported through one public entry point (`"@paperforge/shared"`).
@@ -90,13 +91,15 @@ See [docs/development/setup.md](./docs/development/setup.md) for all standalone 
 ## Quality-Check Commands
 
 ```bash
-pnpm typecheck     # Build @paperforge/shared, then type-check @paperforge/api and @paperforge/web
-pnpm test          # Build @paperforge/shared, then run Vitest across all 3 workspaces
-pnpm build         # Dependency-ordered full build
+pnpm check         # Sequential fail-fast gate: format:check -> lint -> typecheck -> test -> build
 pnpm format:check  # Verify Prettier formatting (use `pnpm format` to write changes)
+pnpm lint          # Run ESLint across authored JS/TS/TSX files and boundary rules (use `pnpm lint:fix` to apply fixes)
+pnpm typecheck     # Build @paperforge/shared, then type-check @paperforge/api and @paperforge/web
+pnpm test          # Build @paperforge/shared, then run Vitest across all 3 workspaces (use `pnpm test:watch` for multi-workspace watch)
+pnpm build         # Dependency-ordered full build
 ```
 
-_(ESLint, unified `pnpm check`, and CI automation are scheduled for PF-01.7 and are not yet implemented.)_
+GitHub Actions CI (`.github/workflows/ci.yml`) runs `pnpm install --frozen-lockfile` and `pnpm check` across `ubuntu-latest` and `windows-latest` with `fail-fast: false` _(hosted CI execution pending PF-01.7 commit and push)_.
 
 ## Documentation Map
 

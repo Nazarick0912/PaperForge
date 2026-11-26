@@ -19,7 +19,7 @@ Before editing any file, every coding agent must:
 5. Identify cross-module and shared-foundation integration dependencies before making edits.
 6. Ask the project owner (or coordinate with the foundation lead and affected teammates) before introducing architectural, contract, or dependency changes.
 
-## 3. Project Overview & Current Stage (PF-01.6)
+## 3. Project Overview & Current Stage (PF-01.7 — Pending Review)
 
 PaperForge is a TypeScript modular monolith monorepo for a four-member CAT304 AI-assisted educational authoring platform:
 
@@ -28,9 +28,9 @@ PaperForge is a TypeScript modular monolith monorepo for a four-member CAT304 AI
 - **Module 3 (`editor`)** — Unified Assessment Editor & Export Engine ([spec](./docs/modules/03-assessment-editor.md))
 - **Module 4 (`slides`)** — Modular Slide Deck Generator ([spec](./docs/modules/04-slide-generator.md))
 
-**Implemented (PF-01.5 baseline, 301 foundation tests across 10 files)**: Frontend shell, dashboard, placeholder routes (`/exam`, `/quiz`, `/editor`, `/slides`), browser `fetch` API client, live dashboard health check, Hono backend (`127.0.0.1:3000`), Zod env validation, `GET /api/v1/health`, dev/test-only `POST /api/v1/dev/echo`, structured JSON error handling, compiled `@paperforge/shared` infrastructure contracts, dev supervision (`apps/api/scripts/dev.mjs`), and compiled integrated serving (`pnpm start`, `NODE_ENV=production`).
+**Implemented (PF-01.5/PF-01.6 committed baseline + PF-01.7 pending review; 338 foundation tests across 10 files)**: Frontend shell, dashboard, placeholder routes (`/exam`, `/quiz`, `/editor`, `/slides`), browser `fetch` API client, live dashboard health check, Hono backend (`127.0.0.1:3000`), Zod env validation, `GET /api/v1/health`, dev/test-only `POST /api/v1/dev/echo`, structured JSON error handling, compiled `@paperforge/shared` infrastructure contracts, dev supervision (`apps/api/scripts/dev.mjs`), compiled integrated serving (`pnpm start`, `NODE_ENV=production`), root ESLint flat config (`eslint.config.mjs`) with static import-boundary rules, solution-style TypeScript editor discovery (`tsconfig.json`, `apps/web/tsconfig.json`), unified `pnpm check` gate, and `.github/workflows/ci.yml` (`ubuntu-latest` + `windows-latest`, hosted CI execution pending commit/push).
 
-**Not yet implemented**: Educational domain schemas (`SourceDocument`, exam/quiz/assessment/slide schemas), document ingestion, OCR, SQLite persistence (driver/ORM pending), private `.data/` storage workflows, shared AI-provider abstraction (mock first, then evaluated Gemini free-tier options), upload processing, authentication (deferred), export engines (PDF, Moodle XML, optional DOCX, PPTX), and ESLint / `pnpm check` / CI (PF-01.7).
+**Not yet implemented**: Educational domain schemas (`SourceDocument`, exam/quiz/assessment/slide schemas), document ingestion, OCR, SQLite persistence (driver/ORM pending), private `.data/` storage workflows, shared AI-provider abstraction (mock first, then evaluated Gemini free-tier options), upload processing, authentication (deferred), and export engines (PDF, Moodle XML, optional DOCX, PPTX).
 
 ## 4. Architecture Rules
 
@@ -52,7 +52,7 @@ Preserve the approved baseline documented in [docs/architecture/overview.md](./d
 ## 5. Dependency Rules
 
 - Inspect `package.json` manifests before proposing any dependency change.
-- Do not introduce competing frameworks or redundant libraries (preserve React + Vite + React Router Declarative Mode + Tailwind CSS v4 + Lucide React + native React state/`fetch` + Hono + Zod + Vitest + Prettier; planned ESLint, not Biome; no `shadcn/ui`).
+- Do not introduce competing frameworks or redundant libraries (preserve React + Vite + React Router Declarative Mode + Tailwind CSS v4 + Lucide React + native React state/`fetch` + Hono + Zod + Vitest + Prettier + ESLint `10.15.0` / `typescript-eslint` `8.74.0` / `eslint-plugin-react-hooks` `7.1.1`; not Biome; no `shadcn/ui`).
 - Obtain explicit project approval before adding new architectural dependencies (including SQLite drivers/ORMs, document parsers such as `unpdf`/`Mammoth`/`MarkItDown`, editor/export tools such as `Tiptap`/`KaTeX`/`Playwright`/`PptxGenJS`, or AI SDKs). Note that `MarkItDown` introduces a Python dependency and requires explicit architectural review before adoption.
 - Preserve exact dependency version pins and the single root `pnpm-lock.yaml`.
 - Preserve package-manager security policy in `pnpm-workspace.yaml`: `allowBuilds: { esbuild: false }`.
@@ -60,12 +60,13 @@ Preserve the approved baseline documented in [docs/architecture/overview.md](./d
 ## 6. Verification Rules
 
 - Run relevant verification commands from actual repository manifests (see [docs/development/setup.md](./docs/development/setup.md)):
+  - `pnpm check` — sequential fail-fast gate (`format:check` -> `lint` -> `typecheck` -> `test` -> `build`)
+  - `pnpm lint` / `pnpm lint:fix` — ESLint checks (lightweight development quality gate, not a security boundary; static lint does not catch literal dynamic package imports, browser `.js`/`.mjs` package filters, computed dynamic imports `import(expr)`, `require(...)`, or unconfigured aliases — see [Module Boundaries](./docs/architecture/module-boundaries.md))
   - `pnpm typecheck` / `pnpm typecheck:{shared,api,web}`
-  - `pnpm test` / `pnpm test:{shared,api,web}`
+  - `pnpm test` / `pnpm test:watch` / `pnpm test:{shared,api,web}`
   - `pnpm build` / `pnpm build:{shared,api,web}`
   - `pnpm format:check` / `pnpm format`
   - `pnpm dev` (integrated dev) / `pnpm start` (compiled integrated, requires `pnpm build` first)
-  - _(ESLint and `pnpm check` are pending PF-01.7 — do not claim they exist.)_
 - Always report real executed commands, exit codes, and observed outputs.
 - Explicitly distinguish **passed**, **failed**, and **unverified / not run** checks.
 - Never claim a feature works without supporting verification evidence.
