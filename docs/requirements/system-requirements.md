@@ -4,10 +4,10 @@ This document captures the baseline functional, shared-infrastructure, module-sp
 
 > **Authority & Source Disclosure**: Requirements are documented using this precedence order:
 >
-> 1. Explicitly approved current project decisions (PF-01.1–PF-01.5 baseline and architecture directives).
+> 1. Explicitly approved current project decisions (Phase 01 accepted foundation baseline, PF-01.1–PF-01.8).
 > 2. Latest PaperForge implementation slides (`PaperForge.pdf`).
 > 3. Original Group 4 CAT304 proposal (historical requirements reference; superseded wherever it conflicts with approved decisions).
-> 4. Actual repository implementation inspected at HEAD `20a5b4fe199895e3b783b4bd38b8559a75f78936`.
+> 4. Actual repository implementation inspected at accepted Phase 01 foundation code revision `4598b6622e00326079f32d976e3916773f4f601d` (`4598b66`).
 >
 > **Local Source Limitation**: Neither `PaperForge.pdf` nor the original Group 4 CAT304 proposal PDF is stored in this repository. Requirements derived from those documents are recorded from the project's supplied authoritative summary; no document page numbers, slide numbers, or unverified citations have been invented.
 >
@@ -24,9 +24,8 @@ PaperForge supports an educator-centered local authoring workflow across four mo
 
 > **Status Vocabulary** (synchronized 1:1 with [Requirements Traceability Matrix](./traceability.md)):
 >
-> - **Implemented**: Implemented and covered by automated tests in the PF-01.5 baseline (`20a5b4f`).
-> - **Implemented (platform verification pending)**: Implemented and covered by automated tests in PF-01.5, with remaining cross-platform/native verification (native Windows shutdown, platform-specific filesystem-link tests, or real-browser checks) scheduled for PF-01.7/PF-01.8.
-> - **Partially implemented**: Foundation slice exists; remaining scope belongs to PF-01.7 or Phase 02+.
+> - **Implemented**: Implemented and verified in the accepted Phase 01 foundation baseline (`4598b66`, 338 passing tests across 10 files, hosted Windows/Ubuntu CI run `45856446203`, and PF-01.8 technical acceptance, subject to documented nonblocking verification boundaries).
+> - **Partially implemented**: Foundation slice exists in Phase 01; remaining scope belongs to Phase 02+.
 > - **Planned**: Planned for Phase 02+ with no educational implementation yet.
 > - **Planned (decision pending)**: Planned for Phase 02+, with unresolved technical decisions (libraries, schemas, or taxonomy choices tracked in `DEC-001`–`DEC-007`) that must be resolved before implementation.
 > - **Deferred**: Explicitly postponed beyond the initial local prototype (or marked optional/excluded).
@@ -37,10 +36,10 @@ PaperForge supports an educator-centered local authoring workflow across four mo
 
 ### Application Foundation
 
-- **`FR-FND-001` — Unified Application Shell & Connectivity Status** _(Implemented (platform verification pending))_
-  The web application shall provide a shared responsive navigation shell, a dashboard entry page, dedicated routes for all four authoring modules (`/exam`, `/quiz`, `/editor`, `/slides`), a fallback not-found page, and a live backend liveness indicator querying `GET /api/v1/health` with bounded timeout and manual retry. _(Automated Vitest checks pass; real-browser regression verification is pending PF-01.8.)_
-- **`FR-FND-002` — Validated Backend HTTP Foundation & Integrated Local Serving** _(Implemented (platform verification pending))_
-  The backend shall validate startup environment variables (`HOST`, `PORT`, `NODE_ENV`) via Zod, expose `GET /api/v1/health` in all modes and `POST /api/v1/dev/echo` in non-production modes only, return standardized structured JSON error envelopes (`ApiErrorResponse`), and support compiled integrated single-origin serving (`pnpm start`) with `NODE_ENV=production`. _(Automated API tests pass; remaining platform-specific filesystem-link and native Windows shutdown checks are pending PF-01.7/PF-01.8.)_
+- **`FR-FND-001` — Unified Application Shell & Connectivity Status** _(Implemented)_
+  The web application shall provide a shared responsive navigation shell, a dashboard entry page, dedicated routes for all four authoring modules (`/exam`, `/quiz`, `/editor`, `/slides`), a fallback not-found page, and a live backend liveness indicator querying `GET /api/v1/health` with bounded timeout and manual retry. _(Verified via 63 web Vitest tests, hosted Windows/Ubuntu CI, and PF-01.8 real Chromium desktop `1440×900` & mobile `390×844` checks including keyboard/`Escape`/focus and offline manual-retry recovery; does not claim exhaustive cross-browser coverage.)_
+- **`FR-FND-002` — Validated Backend HTTP Foundation & Integrated Local Serving** _(Implemented)_
+  The backend shall validate startup environment variables (`HOST`, `PORT`, `NODE_ENV`) via Zod, expose `GET /api/v1/health` in all modes and `POST /api/v1/dev/echo` in non-production modes only, return standardized structured JSON error envelopes (`ApiErrorResponse`), and support compiled integrated single-origin serving (`pnpm start`) with `NODE_ENV=production`. _(Verified via 215 API Vitest tests, hosted Windows/Ubuntu CI, PF-01.8 integrated startup & Vite preview proxy checks, real Windows junction containment, and native Windows `Ctrl+C` shutdown on isolated ports; default-port `3000`/`5173` confirmation remains an owner check and OS-restricted filesystem-link variants remain deferred where unsupported/unpermitted.)_
 - **`FR-FND-003` — Compiled Shared Contract Package** _(Partially implemented)_
   Cross-workspace request, response, and domain schemas shall be defined as Zod schemas in `@paperforge/shared`, compiled to `dist/index.js` and `dist/index.d.ts`, consumed via the single `"@paperforge/shared"` entry point, and validated at runtime on both frontend and backend boundaries. _(Infrastructure contracts implemented; educational domain contracts pending Phase 02.)_
 
@@ -144,8 +143,8 @@ See [Module 4 Specification](../modules/04-slide-generator.md) for full workflow
 
 ### Security & Privacy
 
-- **`NFR-SEC-001` — Local Loopback & HTTP Boundary Hardening** _(Implemented (platform verification pending))_
-  Local servers shall bind to `127.0.0.1` by default; `@paperforge/api` shall reject non-loopback `HOST` values during the local-only prototype to reduce accidental network exposure risk (loopback binding reduces exposure risk but does not constitute complete security). Browser API calls shall use normalized same-origin `/api` paths with `redirect: "error"`. Integrated static serving shall verify the physical `apps/web/dist` root, reject symlinks/junctions, and return sanitized JSON errors without leaking internal stack traces or unsafe headers. _(Core controls implemented and covered by automated tests; remaining platform-specific filesystem-link verification is pending PF-01.7/PF-01.8.)_
+- **`NFR-SEC-001` — Local Loopback & HTTP Boundary Hardening** _(Implemented)_
+  Local servers shall bind to `127.0.0.1` by default; `@paperforge/api` shall reject non-loopback `HOST` values during the local-only prototype to reduce accidental network exposure risk (loopback binding reduces exposure risk but does not constitute complete security). Browser API calls shall use normalized same-origin `/api` paths with `redirect: "error"`. Integrated static serving shall verify the physical `apps/web/dist` root, reject symlinks/junctions, and return sanitized JSON errors without leaking internal stack traces or unsafe headers. _(Verified via automated tests on Windows/Ubuntu CI and PF-01.8 real Windows junction containment; remaining OS-restricted filesystem-link variants are deferred where the operating system does not support or permit their creation.)_
 - **`NFR-SEC-002` — Private File & Secret Isolation** _(Partially implemented)_
   Uploaded documents, SQLite databases, temporary exports, and `.env` secrets shall remain outside version control and outside publicly served static directories. Future upload handlers shall validate file type, size, and safe storage containment inside `.data/`.
 - **`NFR-PRV-001` — Local-Only Privacy Boundary & Non-Confidential AI Evaluation** _(Partially implemented)_
@@ -153,15 +152,15 @@ See [Module 4 Specification](../modules/04-slide-generator.md) for full workflow
 
 ### Reliability & Verification
 
-- **`NFR-REL-001` — Supervised Local Lifecycle & Explicit Startup Failure Handling** _(Implemented (platform verification pending))_
-  Development orchestration (`pnpm dev`) shall verify backend IPC readiness within bounded startup deadlines, fail explicitly on initial startup errors, recover automatically on post-readiness source-edit failures, and close listeners on shutdown or supervisor IPC loss. Integrated `pnpm start` shall fail explicitly if `apps/web/dist/index.html` is missing rather than silently serving stale or missing builds. _(Implemented and covered by automated tests; final native Windows shutdown and clean-install cross-platform verification remain pending PF-01.7/PF-01.8.)_
-- **`NFR-REL-002` — Automated Multi-Workspace Verification** _(Partially implemented)_
-  All workspaces shall maintain strict TypeScript compilation (`pnpm typecheck`), Vitest test suites (`pnpm test`), dependency-ordered builds (`pnpm build`), Prettier formatting (`pnpm format:check`), ESLint linting (`pnpm lint`), unified fail-fast `pnpm check`, and cross-platform CI (`.github/workflows/ci.yml`). _(ESLint, `pnpm check`, and `.github/workflows/ci.yml` are implemented locally in PF-01.7; hosted GitHub Actions CI execution and independent PF-01.7 review remain pending.)_
+- **`NFR-REL-001` — Supervised Local Lifecycle & Explicit Startup Failure Handling** _(Implemented)_
+  Development orchestration (`pnpm dev`) shall verify backend IPC readiness within bounded startup deadlines, fail explicitly on initial startup errors, recover automatically on post-readiness source-edit failures, and close listeners on shutdown or supervisor IPC loss. Integrated `pnpm start` shall fail explicitly if `apps/web/dist/index.html` is missing rather than silently serving stale or missing builds. _(Verified via 26 supervisor/lifecycle tests passing on hosted Windows & Ubuntu CI, fresh Windows clone checks, and PF-01.8 native Windows `Ctrl+C` shutdown for both `pnpm dev` and `pnpm start` on isolated ports with confirmed process termination and listener release; default-port `3000`/`5173` confirmation remains an owner check.)_
+- **`NFR-REL-002` — Automated Multi-Workspace Verification** _(Implemented)_
+  All workspaces shall maintain strict TypeScript compilation (`pnpm typecheck`), Vitest test suites (`pnpm test`), dependency-ordered builds (`pnpm build`), Prettier formatting (`pnpm format:check`), ESLint linting (`pnpm lint`), unified fail-fast `pnpm check`, and cross-platform CI (`.github/workflows/ci.yml`). _(Verified via fresh-clone Windows `pnpm check` and hosted GitHub Actions CI run `45856446203` passing on both `windows-latest` and `ubuntu-latest` for commit `4598b66` with 338 passing tests across 10 files.)_
 
 ### Usability & Maintainability
 
 - **`NFR-USA-001` — Accessible Educator UI & Explicit Capability Status** _(Partially implemented)_
-  The web UI shall provide responsive desktop and accessible mobile navigation, clear loading/empty/error states, graceful degradation when the local backend is offline, and explicit distinction between active features and under-development placeholders.
+  The web UI shall provide responsive desktop and accessible mobile navigation, clear loading/empty/error states, graceful degradation when the local backend is offline, and explicit distinction between active features and under-development placeholders. _(Foundation shell verified in PF-01.8 Chromium desktop `1440×900` and mobile `390×844` checks; Phase 02 module UIs remain planned.)_
 - **`NFR-MNT-001` — Modular Monolith Maintainability & Supply-Chain Policy** _(Implemented)_
   Code shall respect documented frontend, backend, and shared boundaries, prohibit cross-feature private imports and duplicated shared services, use strict ESM TypeScript, preserve exact dependency pins in one root `pnpm-lock.yaml`, and preserve `allowBuilds: { esbuild: false }`.
 
@@ -169,9 +168,9 @@ See [Module 4 Specification](../modules/04-slide-generator.md) for full workflow
 
 ## 5. Current Prototype Constraints
 
-- **Implemented foundation only**: The 338 currently passing tests verify infrastructure contracts, HTTP middleware, environment validation, frontend shell/API client, static containment, and dev supervision — **not** educational authoring functionality.
+- **Implemented foundation only**: The 338 passing tests (60 shared, 215 API, 63 web) verify infrastructure contracts, HTTP middleware, environment validation, frontend shell/API client, static containment, and dev supervision — **not** educational authoring functionality.
 - **Single-machine local execution & security boundary**: Loopback-only (`127.0.0.1`) binding reduces accidental network exposure risk for this single-user prototype, but does not constitute complete security (authentication is deferred and local same-machine processes are not isolated).
-- **Pending cross-platform verification**: Automated foundation tests and local `pnpm check` pass on Windows, while hosted GitHub Actions CI (`ubuntu-latest` + `windows-latest`), final native Windows interactive shutdown, clean-install cross-platform portability, real-browser regression checks, and remaining platform-specific filesystem-link tests remain pending commit/push and PF-01.8.
+- **Nonblocking Phase 01 verification boundaries**: Phase 01 passed fresh Windows clone checks, hosted Windows/Ubuntu CI (`run 45856446203`), Chromium desktop/mobile checks, Windows junction containment, and native Windows `Ctrl+C` shutdown on isolated ports. Default-port (`3000`/`5173`) startup/shutdown confirmation remains an owner check, OS-restricted filesystem-link variants remain deferred where unsupported/unpermitted, `OBS-001` remains scheduled for Phase 02 SQLite persistence, individual teammate onboarding completion is not claimed, and Phase 01 acceptance does not claim exhaustive browser, OS, or filesystem compatibility.
 - **Text-based source files first**: Initial ingestion targets digitally authored `PDF`, `DOCX`, and `PPTX` documents; scanned images/PDFs and diagrams are not expected to parse completely.
 - **No real AI provider yet**: External LLM calls are not implemented; Phase 02 starts with a deterministic mock provider.
 

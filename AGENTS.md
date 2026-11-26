@@ -19,7 +19,7 @@ Before editing any file, every coding agent must:
 5. Identify cross-module and shared-foundation integration dependencies before making edits.
 6. Ask the project owner (or coordinate with the foundation lead and affected teammates) before introducing architectural, contract, or dependency changes.
 
-## 3. Project Overview & Current Stage (PF-01.7 — Pending Review)
+## 3. Project Overview & Current Stage (Phase 01 Complete — Foundation `4598b66`, Next: Phase 02)
 
 PaperForge is a TypeScript modular monolith monorepo for a four-member CAT304 AI-assisted educational authoring platform:
 
@@ -28,9 +28,9 @@ PaperForge is a TypeScript modular monolith monorepo for a four-member CAT304 AI
 - **Module 3 (`editor`)** — Unified Assessment Editor & Export Engine ([spec](./docs/modules/03-assessment-editor.md))
 - **Module 4 (`slides`)** — Modular Slide Deck Generator ([spec](./docs/modules/04-slide-generator.md))
 
-**Implemented (PF-01.5/PF-01.6 committed baseline + PF-01.7 pending review; 338 foundation tests across 10 files)**: Frontend shell, dashboard, placeholder routes (`/exam`, `/quiz`, `/editor`, `/slides`), browser `fetch` API client, live dashboard health check, Hono backend (`127.0.0.1:3000`), Zod env validation, `GET /api/v1/health`, dev/test-only `POST /api/v1/dev/echo`, structured JSON error handling, compiled `@paperforge/shared` infrastructure contracts, dev supervision (`apps/api/scripts/dev.mjs`), compiled integrated serving (`pnpm start`, `NODE_ENV=production`), root ESLint flat config (`eslint.config.mjs`) with static import-boundary rules, solution-style TypeScript editor discovery (`tsconfig.json`, `apps/web/tsconfig.json`), unified `pnpm check` gate, and `.github/workflows/ci.yml` (`ubuntu-latest` + `windows-latest`, hosted CI execution pending commit/push).
+**Implemented & Accepted (Phase 01 complete at foundation code revision `4598b66`; PF-01.7 committed at `613bf77`, PF-01.7-CI1 committed at `4598b66`, PF-01.8 technically approved; 338 foundation tests across 10 files)**: Frontend shell, dashboard, placeholder routes (`/exam`, `/quiz`, `/editor`, `/slides`), browser `fetch` API client, live dashboard health check, Hono backend (`127.0.0.1:3000`), Zod env validation, `GET /api/v1/health`, dev/test-only `POST /api/v1/dev/echo`, structured JSON error handling, compiled `@paperforge/shared` infrastructure contracts, dev supervision (`apps/api/scripts/dev.mjs`), compiled integrated serving (`pnpm start`, `NODE_ENV=production`), root ESLint flat config (`eslint.config.mjs`) with static import-boundary rules, solution-style TypeScript editor discovery (`tsconfig.json`, `apps/web/tsconfig.json`), unified `pnpm check` gate, and `.github/workflows/ci.yml` (passed on hosted `ubuntu-latest` and `windows-latest`, run `45856446203`). Phase 02 is the next development stage, with exact tasks and contracts awaiting approval.
 
-**Not yet implemented**: Educational domain schemas (`SourceDocument`, exam/quiz/assessment/slide schemas), document ingestion, OCR, SQLite persistence (driver/ORM pending), private `.data/` storage workflows, shared AI-provider abstraction (mock first, then evaluated Gemini free-tier options), upload processing, authentication (deferred), and export engines (PDF, Moodle XML, optional DOCX, PPTX).
+**Not yet implemented (Phase 02+)**: Educational domain schemas (`SourceDocument`, exam/quiz/assessment/slide schemas), document ingestion, OCR, SQLite persistence (driver/ORM pending; `OBS-001` scheduled for Phase 02), private `.data/` storage workflows, shared AI-provider abstraction (mock first, then evaluated Gemini free-tier options), upload processing, authentication (deferred), and export engines (PDF, Moodle XML, optional DOCX, PPTX).
 
 ## 4. Architecture Rules
 

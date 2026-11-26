@@ -1,6 +1,6 @@
 # PaperForge Architecture Overview
 
-This document explains PaperForge's repository structure, runtime execution modes, shared infrastructure responsibilities, and conceptual data flow across its four educational modules. It explicitly distinguishes **implemented foundation capabilities (PF-01.5)** from **planned Phase 02+ capabilities**.
+This document explains PaperForge's repository structure, runtime execution modes, shared infrastructure responsibilities, and conceptual data flow across its four educational modules. It explicitly distinguishes **implemented and accepted Phase 01 foundation capabilities (revision `4598b66`)** from **planned Phase 02+ capabilities** (exact Phase 02 tasks and contracts awaiting approval).
 
 ## 1. Architectural Style: Modular Monolith in a TypeScript Monorepo
 
@@ -27,26 +27,26 @@ Separating by runtime layer keeps browser code strictly isolated from Node.js AP
 
 ## 2. Current vs. Planned Architecture
 
-### Currently Implemented (PF-01.5 Foundation)
+### Currently Implemented (Phase 01 Foundation — Accepted at `4598b66`)
 
 - **Shared contracts (`packages/shared`)**: Infrastructure-level Zod schemas and inferred TypeScript types (`HealthResponseSchema`, `EchoRequestSchema`, `EchoResponseSchema`, `ApiErrorCodeSchema`, `ApiErrorResponseSchema`).
 - **Frontend (`apps/web`)**:
   - React Router Declarative Mode shell (`/` dashboard plus placeholder routes `/exam`, `/quiz`, `/editor`, `/slides`, and fallback `*` not-found page).
   - Accessible navigation shell (`AppShell`, `Sidebar`, `AppHeader`, `PageHeader`) and minimal PaperForge-owned UI and feedback primitives (`Badge`, `Button`, `Card`, `Input`, `EmptyState`, `ErrorBoundary`, `ErrorState`, `LoadingState`).
   - Browser-native `fetch` API client (`apps/web/src/lib/api/`) enforcing normalized same-origin `/api` paths, `redirect: "error"`, timeout/abort handling, and runtime Zod validation of responses.
-  - Dashboard live backend liveness indicator (`GET /api/v1/health`) with 5-second timeout and manual retry.
+  - Dashboard live backend liveness indicator (`GET /api/v1/health`) with 5-second timeout and manual retry (verified in Chromium desktop `1440×900` and mobile `390×844` during PF-01.8).
 - **Backend (`apps/api`)**:
   - Hono application with `@hono/node-server` binding to loopback `127.0.0.1` (non-loopback `HOST` values are rejected).
   - Zod-validated environment configuration (`HOST`, `PORT`, `NODE_ENV`) loading optional `apps/api/.env` via native `process.loadEnvFile`.
   - `GET /api/v1/health` (all environments) and `POST /api/v1/dev/echo` (non-production only, RFC 9110 `content-type` validation).
   - Centralized structured JSON error handling (`errorHandler`, `notFoundHandler`) with sanitized error envelopes and validated header preservation (`WWW-Authenticate`, `Allow`, `Retry-After`).
-  - Integrated compiled frontend serving (`apps/api/src/middleware/frontend.ts`) with physical build-root verification, symlink/junction rejection, per-request regular-file containment, and RFC 9110 SPA `Accept` negotiation. _(Core behavior is implemented and covered by automated tests; remaining platform-specific filesystem-link tests are pending PF-01.7/PF-01.8.)_
-  - Development process supervisor (`apps/api/scripts/dev.mjs`) running Node.js with the `tsx` loader, verifying child IPC readiness and restarting on `apps/api/src` or `packages/shared/dist` changes. _(Final interactive native Windows shutdown and real-browser regression checks remain pending PF-01.7/PF-01.8.)_
-- **Quality gates & CI (PF-01.7 — implemented locally, pending independent acceptance & hosted CI execution)**:
+  - Integrated compiled frontend serving (`apps/api/src/middleware/frontend.ts`) with physical build-root verification, symlink/junction rejection (including real Windows junction containment verified in PF-01.8; remaining OS-restricted filesystem-link variants deferred where unsupported or unpermitted), per-request regular-file containment, and RFC 9110 SPA `Accept` negotiation.
+  - Development process supervisor (`apps/api/scripts/dev.mjs`) running Node.js with the `tsx` loader, verifying child IPC readiness and restarting on `apps/api/src` or `packages/shared/dist` changes. Genuine native Windows `Ctrl+C` shutdown for `pnpm dev` and `pnpm start` was verified on isolated ports in PF-01.8 (default-port `3000`/`5173` confirmation remains an owner check).
+- **Quality gates & CI (PF-01.7 `613bf77` + PF-01.7-CI1 `4598b66` — approved and committed)**:
   - Root ESLint flat configuration (`eslint.config.mjs`) with static workspace/module boundary enforcement (lightweight development quality gate; see [Module Boundaries](./module-boundaries.md) for explicit enforcement scope and limitations).
   - Solution-style TypeScript editor discovery (`tsconfig.json`, `apps/web/tsconfig.json`).
-  - Unified fail-fast `pnpm check` gate (`format:check` -> `lint` -> `typecheck` -> `test` -> `build`) and cross-platform GitHub Actions CI workflow (`.github/workflows/ci.yml` targeting `ubuntu-latest` and `windows-latest`; hosted CI execution pending commit and push).
-- **Verification**: 338 automated foundation tests across 10 Vitest files (60 shared, 215 API, 63 web).
+  - Unified fail-fast `pnpm check` gate (`format:check` -> `lint` -> `typecheck` -> `test` -> `build`) and cross-platform GitHub Actions CI workflow (`.github/workflows/ci.yml`), passing on both `ubuntu-latest` and `windows-latest` ([run `45856446203`](https://github.com/Nazarick0912/PaperForge/actions/runs/45856446203)).
+- **Verification**: 338 automated foundation tests across 10 Vitest files (60 shared, 215 API, 63 web), passing on fresh Windows clone and hosted Windows/Ubuntu CI; PF-01.8 technically approved at `4598b66`.
 
 ### Planned for Phase 02+ (Not Yet Implemented)
 
@@ -95,7 +95,7 @@ See [Development Setup](../development/setup.md) for exact commands, environment
 
 ## 4. Planned Conceptual Data Flow Across Modules
 
-The diagram below depicts the **planned** Phase 02+ educational data flow. None of these educational pipelines are implemented in PF-01.5.
+The diagram below depicts the **planned** Phase 02+ educational data flow. None of these educational pipelines are implemented in Phase 01.
 
 ```mermaid
 flowchart TD

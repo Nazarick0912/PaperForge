@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (loopback binding, env validation, and integrated static containment implemented in PF-01.4/PF-01.5; SQLite and `.data/` persistence pending Phase 02; authentication deferred)
+Accepted (loopback binding, env validation, and integrated static containment implemented in PF-01.4/PF-01.5 and verified at Phase 01 revision `4598b66` including PF-01.8 Windows junction containment and native `Ctrl+C` shutdown on isolated ports; SQLite and `.data/` persistence pending Phase 02; authentication deferred)
 
 ## Context
 
@@ -17,7 +17,7 @@ PaperForge is developed as an academic prototype for CAT304, intended to run loc
    - `@paperforge/api` explicitly validates `HOST === "127.0.0.1"` via Zod and refuses to start on non-loopback addresses (`0.0.0.0`, LAN IPs, etc.) to reduce the risk of accidental network exposure. Loopback binding lowers shared-network exposure risk, but does **not** constitute complete security (for example, it does not replace authentication or isolate local processes running under the same OS account).
 3. **Same-origin API boundary and trusted static containment**:
    - Browser API requests use normalized same-origin `/api` paths with `redirect: "error"`.
-   - Integrated `pnpm start` runs with `NODE_ENV=production` (disabling `POST /api/v1/dev/echo`) and serves only verified physical regular files inside `apps/web/dist`, rejecting symlinks/junctions and path traversal. _(Core containment is implemented and tested; remaining platform-specific filesystem-link verification is scheduled for PF-01.7/PF-01.8.)_
+   - Integrated `pnpm start` runs with `NODE_ENV=production` (disabling `POST /api/v1/dev/echo`) and serves only verified physical regular files inside `apps/web/dist`, rejecting symlinks/junctions and path traversal. _(Verified via automated tests on Windows/Ubuntu CI and real Windows junction containment in PF-01.8; remaining OS-restricted filesystem-link variants are deferred where the operating system does not support or permit their creation.)_
 4. **Private local persistence under `.data/` (planned)**:
    - Store future SQLite database files, uploaded reference documents, and private generated artifacts inside repository-root `.data/` (gitignored; future `DATA_DIR` must resolve consistently relative to the repository root) and strictly outside any publicly served static directory.
    - Never commit `.env` files, API keys, confidential exam papers, or runtime `.data/` contents to Git.
@@ -45,7 +45,7 @@ PaperForge is developed as an academic prototype for CAT304, intended to run loc
 
 ## Scope and Unresolved Details
 
-- **Implemented (with pending platform verification)**: Loopback-only `HOST` validation, Vite `127.0.0.1` binding, `.gitignore` rules for `/.data/`, `.env*`, and SQLite extensions, same-origin `/api` client policy, and physical `apps/web/dist` static containment (remaining platform-specific filesystem-link tests and native Windows shutdown checks are pending PF-01.7/PF-01.8).
+- **Implemented & Verified (Phase 01 — revision `4598b66`)**: Loopback-only `HOST` validation, Vite `127.0.0.1` binding, `.gitignore` rules for `/.data/`, `.env*`, and SQLite extensions, same-origin `/api` client policy, physical `apps/web/dist` static containment (including real Windows junction containment verified in PF-01.8), and native Windows `Ctrl+C` shutdown verified on isolated ports. Nonblocking boundaries: default-port (`3000`/`5173`) startup/shutdown confirmation remains an owner check, and remaining OS-restricted filesystem-link variants are deferred where unsupported or unpermitted.
 - **Unresolved / Pending**:
   - Concrete SQLite driver, ORM, migration strategy, and `DATA_DIR` path-containment implementation (Phase 02).
   - SQLite sidecar exclusions review (`OBS-001`, Phase 02).

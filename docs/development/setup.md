@@ -153,12 +153,12 @@ For compiled integrated runs (`pnpm start`):
 
 ### Continuous Integration (GitHub Actions)
 
-`.github/workflows/ci.yml` defines a cross-platform CI matrix (`ubuntu-latest` and `windows-latest`, `fail-fast: false`, `permissions: { contents: read }`) that installs Node.js `24.22.3` and `pnpm` `11.29.0`, runs `pnpm install --frozen-lockfile`, and runs `pnpm check`. _(Hosted GitHub Actions execution is pending the PF-01.7 commit and push.)_
+`.github/workflows/ci.yml` defines a cross-platform CI matrix (`ubuntu-latest` and `windows-latest`, `fail-fast: false`, `permissions: { contents: read }`) that installs Node.js `24.22.3` and `pnpm` `11.29.0`, runs `pnpm install --frozen-lockfile`, and runs `pnpm check`. Both `windows-latest` and `ubuntu-latest` passed on the accepted Phase 01 foundation revision `4598b66` ([run `45856446203`](https://github.com/Nazarick0912/PaperForge/actions/runs/45856446203)).
 
 ## 7. Stopping Local Servers Cleanly
 
 - Press **`Ctrl+C`** in the interactive terminal running `pnpm dev`, `pnpm start`, `pnpm start:api`, or `pnpm preview:web`.
-- `@paperforge/api` implements `SIGINT`/`SIGTERM` (and supervisor IPC disconnect in dev mode) handlers to close the HTTP listener and release port `3000`. Automated supervisor and lifecycle tests cover these paths; final interactive native Windows shutdown verification remains scheduled for PF-01.7/PF-01.8 (see [docs/roadmap.md](../roadmap.md)).
+- `@paperforge/api` implements `SIGINT`/`SIGTERM` (and supervisor IPC disconnect in dev mode) handlers to close the HTTP listener and release the bound port. Automated supervisor/lifecycle tests (passing on Windows and Ubuntu CI) and PF-01.8 native Windows `Ctrl+C` acceptance verified process termination and listener release for both `pnpm dev` and `pnpm start` on isolated ports; confirming startup/shutdown on default ports `3000` and `5173` remains an owner check (see [docs/roadmap.md](../roadmap.md)).
 - On Windows, interrupting `pnpm dev` with `Ctrl+C` may print a nonzero wrapper exit code (such as `1`). That interruption status is distinct from an initial startup failure.
 
 ## 8. Troubleshooting

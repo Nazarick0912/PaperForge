@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (core stack implemented in PF-01.1 through PF-01.5; ESLint, `pnpm check`, and `.github/workflows/ci.yml` implemented locally in PF-01.7, pending independent review and hosted CI execution)
+Accepted (core stack implemented in PF-01.1 through PF-01.5; ESLint, `pnpm check`, and `.github/workflows/ci.yml` approved and committed in PF-01.7 `613bf77` + PF-01.7-CI1 `4598b66`, verified on hosted `windows-latest` and `ubuntu-latest` CI run `45856446203` and PF-01.8 acceptance)
 
 ## Context
 
@@ -57,9 +57,8 @@ Adopt and preserve the following pinned baseline stack:
 
 ## Scope and Unresolved Details
 
-- **Implemented**: All pinned core runtime, frontend, backend, testing, Prettier, and root ESLint dependencies listed above, unified `pnpm check` gate, and `.github/workflows/ci.yml` (hosted CI execution pending commit and push; PF-01.7 pending independent review).
-- **Unresolved / Pending**:
-  - Hosted GitHub Actions CI verification on `ubuntu-latest` and `windows-latest` after commit/push.
+- **Implemented & Verified**: All pinned core runtime, frontend, backend, testing, Prettier, and root ESLint dependencies listed above, unified `pnpm check` gate, and `.github/workflows/ci.yml` (verified on fresh Windows clone and hosted `windows-latest` + `ubuntu-latest` CI run `45856446203` at foundation revision `4598b66`, with 338 passing tests across 10 files).
+- **Unresolved / Pending (Phase 02+)**:
   - SQLite database driver and ORM selection (Phase 02).
   - Document extraction libraries (`unpdf`, `Mammoth`, `MarkItDown` candidates — see [ADR-0005](./0005-document-ingestion-scope.md)).
   - Rich-text/math editor and export libraries (`Tiptap`, `KaTeX`, `Playwright`, XML writer, `PptxGenJS` candidates — Phase 02+).
