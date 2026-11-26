@@ -1,80 +1,95 @@
 # AGENTS.md — PaperForge Canonical Engineering Instructions
 
-This file is the single canonical source of repository rules for AI coding assistants (including Antigravity and other tools supporting `AGENTS.md`). Do not create duplicate rule files such as `GEMINI.md`.
+This file is the single canonical repository instruction file for AI coding agents working on PaperForge. Do **not** create competing or duplicate instruction files such as `GEMINI.md`.
 
-## 1. Project Overview
+## 1. Instruction Discovery & Manual Fallback
 
-PaperForge is a modular monolith TypeScript monorepo for an AI-assisted educational authoring platform with four feature modules:
+- **Confirmed automatic discovery**: Confirmed in the installed Antigravity environment (documented in Antigravity's built-in `agy-customizations` rules guide — repository `AGENTS.md` files are discovered hierarchically up to the repository root as always-on rules, subject to a 24 KB per-file limit — and directly observed as loaded automatically in active PaperForge sessions).
+- **Unverified behavior**: Automatic `AGENTS.md` discovery in other AI coding tools, third-party IDE extensions, CLI agents, or alternate tool versions has **not** been verified here.
+- **Required manual fallback**: Whenever working in an unverified tool, starting a session outside the repository root, or when automatic discovery is uncertain, the developer must **explicitly instruct the agent to read `AGENTS.md` and the relevant architecture/module documents before editing any files**.
 
-- **Module 1**: Exam Question Paper Generator
-- **Module 2**: Interactive Source-Based Quiz Generator
-- **Module 3**: Unified Assessment Editor & Export Engine
-- **Module 4**: Modular Slide Deck Generator
+## 2. Starting a Task
 
-## 2. Approved Architecture Baseline
+Before editing any file, every coding agent must:
 
-Do not silently replace or alter these approved technology decisions or shared contracts:
+1. Read `AGENTS.md`.
+2. Inspect actual repository state (`git status --short --branch`, relevant manifests, and existing files — never assume a file, export, or script exists).
+3. Read the relevant architecture and module documentation (`docs/architecture/overview.md`, `docs/architecture/module-boundaries.md`, relevant ADRs, and the assigned specification in `docs/modules/`).
+4. Understand the assigned task and its allowed scope.
+5. Identify cross-module and shared-foundation integration dependencies before making edits.
+6. Ask the project owner (or coordinate with the foundation lead and affected teammates) before introducing architectural, contract, or dependency changes.
 
-- **Runtime**: Node.js 24 LTS (`>=24.22.3 <25`, reference version `24.22.3` in `.node-version`)
-- **Package manager**: `pnpm` (`11.29.0`) with `pnpm workspaces`
-- **Workspaces**:
-  - `apps/web` (`@paperforge/web`) — React + Vite + TypeScript, React Router Declarative Mode, Tailwind CSS v4, Lucide React, native React state + browser-native `fetch` API client (`apps/web/src/lib/api/`), minimal PaperForge-owned UI primitives (no `shadcn/ui`)
-  - `apps/api` (`@paperforge/api`) — Node.js + Hono + Zod modular monolith
-  - `packages/shared` (`@paperforge/shared`) — compiled shared TypeScript types and Zod runtime validation contracts (single public package entry point `"@paperforge/shared"`)
-- **Language & Modules**: Strict TypeScript, ECMAScript modules (`"type": "module"`)
-- **Code Quality & Testing**: ESLint + Prettier (not Biome), Vitest
-- **Persistence & Storage**: SQLite (driver/ORM selection deferred to a later phase), private local file storage under repository-root `.data/` (gitignored; future `DATA_DIR` must resolve consistently relative to the repository root)
-- **AI Integration**: Mock AI provider first, followed by evaluation of eligible Gemini API models
-- **Local Dev Ports & Loopback Binding**: Frontend `5173` (frontend-only preview `4173`), Backend / integrated compiled server `3000`. All local application servers (`@paperforge/web` and `@paperforge/api`) must bind to `127.0.0.1` by default. During this local-only prototype, `@paperforge/api` explicitly rejects non-loopback `HOST` values rather than allowing accidental network exposure.
-- **Environment Template**: `apps/api/.env.example` (never commit `.env` files or secrets; optional `apps/api/.env` is loaded via native Node.js `process.loadEnvFile` with precedence: explicit `process.env` > optional `apps/api/.env` > validated defaults; `pnpm start` explicitly runs the compiled integrated server with `NODE_ENV=production`)
-- **Eventual Quality Gate**: `pnpm check` (to be introduced once ESLint, type-checking, tests, and builds are wired up in PF-01.7)
+## 3. Project Overview & Current Stage (PF-01.6)
 
-## 3. Workspace Ownership & Module Boundaries
+PaperForge is a TypeScript modular monolith monorepo for a four-member CAT304 AI-assisted educational authoring platform:
 
-- **Shared foundation** (root config, `packages/shared`, `apps/web/src/app/`, `apps/web/src/components/`, `apps/web/src/lib/api/`, `apps/web/src/pages/`, `apps/web/src/styles/`, `apps/web/src/features/dashboard/`, `apps/api/src/app.ts`, `apps/api/src/index.ts`, `apps/api/src/config/`, `apps/api/src/middleware/`, `apps/api/src/routes/`, and future shared backend services/infrastructure) is centrally coordinated and requires review before modification.
-- **Active frontend feature directories** (`apps/web/src/features/`):
-  - `features/exam` — Module 1
-  - `features/quiz` — Module 2
-  - `features/editor` — Module 3
-  - `features/slides` — Module 4
-- **Reserved backend module directories** (`apps/api/src/modules/`):
-  - `modules/exam` — Module 1 (reserved namespace `/api/v1/exams`)
-  - `modules/quiz` — Module 2 (reserved namespace `/api/v1/quizzes`)
-  - `modules/editor` — Module 3 (reserved namespace `/api/v1/assessments`)
-  - `modules/slides` — Module 4 (reserved namespace `/api/v1/slides`)
-- **Dependency & Contract Boundaries**:
-  - `packages/shared` must remain browser-safe and runtime-independent; it must not depend on `apps/web`, `apps/api`, React, Hono, Node.js filesystem APIs, browser globals, environment variables, database code, or AI provider code.
-  - `apps/web` and `apps/api` consume `"@paperforge/shared"` via `workspace:*` and its single compiled public entry point (`dist/index.js` + `dist/index.d.ts`). Never import from `packages/shared/src`, private `dist` subpaths, or custom path aliases.
-  - Do not duplicate shared transport or contract schemas inside `apps/web` or `apps/api`.
-  - All browser API requests must use normalized same-origin `/api` paths via `apps/web/src/lib/api/` (never hardcoding backend host/port values, rejecting traversal/external/protocol-relative URLs without silent repair, and enforcing `redirect: "error"`).
-  - No direct cross-feature private imports between feature/module internals.
-  - No frontend access to private server code, server filesystem paths, or database internals.
+- **Module 1 (`exam`)** — Exam Question Paper Generator ([spec](./docs/modules/01-exam-generator.md), owner also leads shared foundation coordination)
+- **Module 2 (`quiz`)** — Interactive Source-Based Quiz Generator ([spec](./docs/modules/02-quiz-generator.md))
+- **Module 3 (`editor`)** — Unified Assessment Editor & Export Engine ([spec](./docs/modules/03-assessment-editor.md))
+- **Module 4 (`slides`)** — Modular Slide Deck Generator ([spec](./docs/modules/04-slide-generator.md))
 
-## 4. Current vs. Planned Repository Stage (PF-01.5)
+**Implemented (PF-01.5 baseline, 301 foundation tests across 10 files)**: Frontend shell, dashboard, placeholder routes (`/exam`, `/quiz`, `/editor`, `/slides`), browser `fetch` API client, live dashboard health check, Hono backend (`127.0.0.1:3000`), Zod env validation, `GET /api/v1/health`, dev/test-only `POST /api/v1/dev/echo`, structured JSON error handling, compiled `@paperforge/shared` infrastructure contracts, dev supervision (`apps/api/scripts/dev.mjs`), and compiled integrated serving (`pnpm start`, `NODE_ENV=production`).
 
-The `@paperforge/shared` package (infrastructure-level schemas and inferred types for health, echo, and structured API error envelopes), `@paperforge/web` frontend application (with native `fetch` API client, strict `/api` URL normalization and `redirect: "error"` policy, live dashboard health status, and accessible mobile navigation), and `@paperforge/api` backend application (shared-contract integration, RFC 9110 `content-type` validation, safe `HTTPException` status/header handling for `401`/`405`/`429`/`503`, RFC 9110 SPA `Accept` negotiation, and compiled frontend serving with trusted physical build-root and per-request regular-file containment) are implemented and integrated. Build ordering compiles `@paperforge/shared` before dependent workspaces; `pnpm dev` runs the shared TypeScript watcher, the supervised Node.js + `tsx` backend (`apps/api/scripts/dev.mjs`, enforcing explicit per-child IPC readiness and bounded startup deadlines for both initial and replacement children, failing fast on pre-readiness exits/timeouts/IPC loss, preserving post-readiness replacement-timeout/crash recovery, and shutting down supervised backend children on parent IPC loss), and Vite frontend (configured to observe `packages/shared/dist` updates) via `concurrently --kill-others`.
+**Not yet implemented**: Educational domain schemas (`SourceDocument`, exam/quiz/assessment/slide schemas), document ingestion, OCR, SQLite persistence (driver/ORM pending), private `.data/` storage workflows, shared AI-provider abstraction (mock first, then evaluated Gemini free-tier options), upload processing, authentication (deferred), export engines (PDF, Moodle XML, optional DOCX, PPTX), and ESLint / `pnpm check` / CI (PF-01.7).
 
-Phase 02 educational domain contracts (`SourceDocument`, exam/quiz/assessment/slide schemas), persistence, document parsing, AI providers, comprehensive architecture documentation/ADRs (PF-01.6), and ESLint/CI/`pnpm check` (PF-01.7) remain pending for their assigned tasks.
+## 4. Architecture Rules
 
-### Currently Available Commands
+Preserve the approved baseline documented in [docs/architecture/overview.md](./docs/architecture/overview.md), [docs/architecture/module-boundaries.md](./docs/architecture/module-boundaries.md), and [ADRs 0001–0006](./docs/architecture/decisions/0001-modular-monolith.md):
 
-- `pnpm install` / `pnpm install --frozen-lockfile` — install or verify workspace dependencies against `pnpm-lock.yaml`
-- `pnpm dev` — build `@paperforge/shared`, then start shared watcher, `@paperforge/api` (`127.0.0.1:3000`), and `@paperforge/web` (`127.0.0.1:5173`, proxying `/api` to `127.0.0.1:3000`)
-- `pnpm build` — build `@paperforge/shared`, `@paperforge/api`, and `@paperforge/web` in dependency order
-- `pnpm typecheck` — build `@paperforge/shared` exports, then type-check `@paperforge/api` and `@paperforge/web`
-- `pnpm test` — build `@paperforge/shared` exports, then run Vitest across all three workspaces
-- `pnpm start` — run compiled integrated server (`http://127.0.0.1:3000`, explicit `NODE_ENV=production`, serving `apps/web/dist` and `/api/v1/health`; requires `pnpm build` first)
-- `pnpm dev:shared` / `pnpm build:shared` / `pnpm typecheck:shared` / `pnpm test:shared` / `pnpm test:shared:watch` — standalone `@paperforge/shared` commands
-- `pnpm dev:web` / `pnpm build:web` / `pnpm typecheck:web` / `pnpm test:web` / `pnpm test:web:watch` — standalone `@paperforge/web` commands (prepare shared `dist/` first; do not start shared watcher)
-- `pnpm preview:web` — frontend-only preview of `apps/web/dist` (`http://127.0.0.1:4173`, no `/api` proxy)
-- `pnpm dev:api` / `pnpm build:api` / `pnpm typecheck:api` / `pnpm test:api` / `pnpm test:api:watch` — standalone `@paperforge/api` commands (prepare shared `dist/` first; do not start shared watcher)
-- `pnpm start:api` — run compiled `apps/api/dist/index.js` independently (API-only mode; respects ordinary environment precedence)
-- `pnpm format` / `pnpm format:check` — format or verify formatting with Prettier
+- **Approved TypeScript monorepo**: Keep the three workspaces — `apps/web` (`@paperforge/web`), `apps/api` (`@paperforge/api`), and `packages/shared` (`@paperforge/shared`) — using strict TypeScript (`6.0.3`), ESM (`"type": "module"`), Node.js 24 LTS (`>=24.22.3 <25`, reference `24.22.3`), and `pnpm` `11.29.0`.
+- **Workspace & module boundaries**:
+  - Frontend module code belongs in `apps/web/src/features/{exam,quiz,editor,slides}/`.
+  - Backend module code belongs in `apps/api/src/modules/{exam,quiz,editor,slides}/` (provisional reserved namespaces `/api/v1/exams`, `/api/v1/quizzes`, `/api/v1/assessments`, `/api/v1/slides` — subject to Phase 02 API contract approval).
+  - Shared foundation paths (`packages/shared/`, `apps/web/src/{app,components,lib/api,pages,styles,features/dashboard}/`, `apps/api/src/{app.ts,index.ts,config,middleware,routes}/`, future shared `services/` and `infrastructure/`, and root config) require review before modification.
+- **Single public shared entry point**: Import shared schemas and types exclusively from `"@paperforge/shared"` (compiled `packages/shared/dist/index.js` + `dist/index.d.ts`). Never import from `packages/shared/src/*`, private `dist/*` subpaths, or custom cross-workspace path aliases. Keep `packages/shared` strictly browser-safe and runtime-independent.
+- **No cross-workspace or cross-feature private imports**: Do not import another workspace's private source files or another module's internal files.
+- **No duplicate contracts or shared services**: Do not duplicate domain/transport schemas in `apps/web` or `apps/api`. Do not build separate document parsers, SQLite databases, AI provider clients, or competing assessment export pipelines inside individual modules.
+- **Browser vs. server isolation**: Keep backend-only logic, server filesystem paths, database internals, and secrets strictly out of `apps/web`.
+- **Runtime validation**: Validate all untrusted inputs (HTTP bodies, headers, environment variables, future file uploads) and all AI outputs (mock or real) at runtime with Zod.
+- **Relative browser API URLs**: Route all browser HTTP requests through `apps/web/src/lib/api/` using normalized same-origin `/api/...` paths with `redirect: "error"`. Never hardcode backend hosts or ports into frontend features.
+- **Local-only & private file containment**: Keep default bindings on `127.0.0.1` (`@paperforge/api` rejects non-loopback `HOST` values to reduce accidental network exposure risk; loopback binding does not constitute complete security). Keep uploaded documents, SQLite databases, and generated private files under gitignored repository-root `.data/` and strictly outside publicly served static directories (`apps/web/dist`).
 
-## 5. Engineering & Collaboration Guardrails
+## 5. Dependency Rules
 
-- **Mandatory inspection & verification**: Always inspect actual repository files before assuming a file, script, export, or dependency exists. Execute actual verification commands and report real commands, exit codes, and outputs in completion reports.
-- **Strict scope**: Keep changes within the assigned task scope; do not implement later-phase features, add speculative dependencies, or silently change approved architecture or shared contracts.
-- **No placeholders**: Never introduce fake build scripts, placeholder verification commands, or nonexistent package exports.
-- **Data & secret protection**: Never commit secrets, `.env` files, confidential documents, SQLite databases, or private runtime data under `.data/`.
-- **Git workflow**: Use task-specific branches and reviewed pull requests for collaboration. Never stage, commit, push, merge, reset, or switch Git branches without explicit user authorization.
+- Inspect `package.json` manifests before proposing any dependency change.
+- Do not introduce competing frameworks or redundant libraries (preserve React + Vite + React Router Declarative Mode + Tailwind CSS v4 + Lucide React + native React state/`fetch` + Hono + Zod + Vitest + Prettier; planned ESLint, not Biome; no `shadcn/ui`).
+- Obtain explicit project approval before adding new architectural dependencies (including SQLite drivers/ORMs, document parsers such as `unpdf`/`Mammoth`/`MarkItDown`, editor/export tools such as `Tiptap`/`KaTeX`/`Playwright`/`PptxGenJS`, or AI SDKs). Note that `MarkItDown` introduces a Python dependency and requires explicit architectural review before adoption.
+- Preserve exact dependency version pins and the single root `pnpm-lock.yaml`.
+- Preserve package-manager security policy in `pnpm-workspace.yaml`: `allowBuilds: { esbuild: false }`.
+
+## 6. Verification Rules
+
+- Run relevant verification commands from actual repository manifests (see [docs/development/setup.md](./docs/development/setup.md)):
+  - `pnpm typecheck` / `pnpm typecheck:{shared,api,web}`
+  - `pnpm test` / `pnpm test:{shared,api,web}`
+  - `pnpm build` / `pnpm build:{shared,api,web}`
+  - `pnpm format:check` / `pnpm format`
+  - `pnpm dev` (integrated dev) / `pnpm start` (compiled integrated, requires `pnpm build` first)
+  - _(ESLint and `pnpm check` are pending PF-01.7 — do not claim they exist.)_
+- Always report real executed commands, exit codes, and observed outputs.
+- Explicitly distinguish **passed**, **failed**, and **unverified / not run** checks.
+- Never claim a feature works without supporting verification evidence.
+- Never create fake scripts, placeholder passing checks, or simulated implementation metrics.
+
+## 7. Git Rules
+
+- Inspect branch and working-tree state before editing (`git status --short --branch`, `git rev-parse HEAD`).
+- Preserve unrelated team changes and report any unexpected modifications immediately.
+- **Never stage, commit, push, merge, reset, or switch Git branches without explicit user authorization.**
+- Report exact created/modified files and a proposed Conventional Commit message upon completing a task.
+- Never silently include generated build outputs (`dist/`), `.env` files, secrets, confidential university documents, SQLite databases, or runtime files under `.data/`.
+
+## 8. Scope Rules
+
+- Work strictly on the assigned module or approved infrastructure task.
+- Do not implement later-phase educational functionality, upload pipelines, databases, or AI integrations without approval.
+- Do not invent finalized Phase 02 contracts, HTTP endpoints, payload shapes, or database tables that have not been approved.
+- Record architectural uncertainties and open decisions rather than silently making incompatible assumptions.
+
+## 9. Documentation Index
+
+- Entry point: [README.md](./README.md) · Collaboration: [CONTRIBUTING.md](./CONTRIBUTING.md)
+- Architecture: [Overview](./docs/architecture/overview.md) · [Module Boundaries](./docs/architecture/module-boundaries.md) · [ADRs 0001–0006](./docs/architecture/decisions/0001-modular-monolith.md)
+- Requirements: [System Requirements](./docs/requirements/system-requirements.md) · [Traceability Matrix](./docs/requirements/traceability.md)
+- Module Specs: [Module 1](./docs/modules/01-exam-generator.md) · [Module 2](./docs/modules/02-quiz-generator.md) · [Module 3](./docs/modules/03-assessment-editor.md) · [Module 4](./docs/modules/04-slide-generator.md)
+- Setup & Planning: [Development Setup](./docs/development/setup.md) · [Roadmap & Deferred Observations](./docs/roadmap.md)
