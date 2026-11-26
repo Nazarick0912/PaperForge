@@ -1,10 +1,11 @@
-import { ArrowRight, Info } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 import { Link } from "react-router";
 
 import { MODULE_NAVIGATION_ITEMS } from "../../app/navigation";
 import { PageHeader } from "../../components/layout/PageHeader";
 import { Badge } from "../../components/ui/Badge";
 import { Card, CardContent, CardFooter, CardHeader } from "../../components/ui/Card";
+import { BackendStatus } from "./BackendStatus";
 
 export function DashboardPage() {
   return (
@@ -15,17 +16,7 @@ export function DashboardPage() {
         badge={<Badge variant="primary">Workspace foundation</Badge>}
       />
 
-      <div
-        role="note"
-        className="flex items-start gap-3 rounded-xl border border-pf-border bg-pf-surface px-4 py-3.5 text-sm text-pf-muted"
-      >
-        <Info aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-pf-primary" />
-        <p>
-          <span className="font-medium text-pf-text">Development status:</span> The shared frontend
-          shell and module routes are active for local development. Backend API integration and
-          shared domain contracts are pending in upcoming Phase 01 tasks.
-        </p>
-      </div>
+      <BackendStatus />
 
       <section aria-labelledby="modules-heading" className="space-y-4">
         <div className="flex items-center justify-between">

@@ -44,8 +44,8 @@ export function Sidebar() {
       </nav>
 
       <div className="border-t border-pf-sidebar-border px-5 py-4">
-        <p className="text-xs font-medium text-slate-200">Local development shell</p>
-        <p className="mt-0.5 text-xs text-slate-400">Backend integration pending</p>
+        <p className="text-xs font-medium text-slate-200">Local prototype</p>
+        <p className="mt-0.5 text-xs text-slate-400">Authoring workspace foundation</p>
       </div>
     </aside>
   );

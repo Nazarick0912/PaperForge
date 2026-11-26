@@ -1,17 +1,17 @@
+import type { HealthResponse } from "@paperforge/shared";
 import { Hono } from "hono";
 
 export function createHealthRoutes(): Hono {
   const routes = new Hono();
 
   routes.get("/", (c) => {
-    return c.json(
-      {
-        data: {
-          status: "ok",
-        },
+    const payload = {
+      data: {
+        status: "ok",
       },
-      200,
-    );
+    } satisfies HealthResponse;
+
+    return c.json(payload, 200);
   });
 
   return routes;
