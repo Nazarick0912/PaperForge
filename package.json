@@ -16,6 +16,12 @@
     "preview:web": "pnpm --filter @paperforge/web preview",
     "test:web": "pnpm --filter @paperforge/web test",
     "test:web:watch": "pnpm --filter @paperforge/web test:watch",
+    "dev:api": "pnpm --filter @paperforge/api dev",
+    "typecheck:api": "pnpm --filter @paperforge/api typecheck",
+    "build:api": "pnpm --filter @paperforge/api build",
+    "start:api": "pnpm --filter @paperforge/api start",
+    "test:api": "pnpm --filter @paperforge/api test",
+    "test:api:watch": "pnpm --filter @paperforge/api test:watch",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
